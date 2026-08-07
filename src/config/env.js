@@ -30,6 +30,32 @@ const csvToArray = (value) =>
     .map((entry) => entry.trim())
     .filter(Boolean)
 
+/**
+ * Parses the CORS allow-list into canonical origins.
+ *
+ * The `Origin` header a browser sends is always scheme + host + port and never
+ * anything else — no path, no trailing slash, host lower-cased. The allow-list
+ * is matched against it by exact string equality, so a perfectly reasonable
+ * entry like `https://crm.example.com/` never matches and every cross-origin
+ * request is rejected. The browser then reports it as a generic network
+ * failure, which is indistinguishable from the API being down.
+ *
+ * Reducing each entry to its origin makes the natural spellings all work.
+ * Entries that cannot be parsed are dropped rather than crashing the process:
+ * an unusable allow-list entry must not take a running API offline, and the
+ * startup summary prints the parsed list.
+ */
+const csvToOrigins = (value) =>
+  csvToArray(value)
+    .map((entry) => {
+      try {
+        return new URL(entry).origin
+      } catch {
+        return null
+      }
+    })
+    .filter(Boolean)
+
 /** Canonical GUID shape, used to tell an Azure identifier from a secret value. */
 const GUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -109,7 +135,7 @@ const envSchema = z
     MONGODB_SERVER_SELECTION_TIMEOUT_MS: z.coerce.number().int().positive().default(5000),
     MONGODB_MAX_POOL_SIZE: z.coerce.number().int().positive().default(10),
 
-    CORS_ORIGINS: z.string().default('http://localhost:5173').transform(csvToArray),
+    CORS_ORIGINS: z.string().default('http://localhost:5173').transform(csvToOrigins),
 
     LOG_LEVEL: z.enum(['error', 'warn', 'info', 'http', 'debug']).default('info'),
     LOG_DIR: z.string().min(1).default('logs'),

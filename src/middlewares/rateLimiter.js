@@ -26,7 +26,15 @@ export const apiRateLimiter = rateLimit({
 
   // Health checks must never be throttled, or a monitoring probe could trip the
   // limiter and make a healthy service look down.
-  skip: (req) => req.path.endsWith('/health'),
+  //
+  // CORS preflights are exempt for a related reason. When the browser app and
+  // the API are on different origins — which is the deployed arrangement, since
+  // the two sit on separate subdomains — the browser sends an OPTIONS request
+  // ahead of most calls. Counting those halves the effective limit for every
+  // user, and the request that gets rejected is the preflight, so the browser
+  // reports a CORS failure rather than a 429 and the cause is invisible.
+  // A preflight is answered from headers alone and touches no route.
+  skip: (req) => req.method === 'OPTIONS' || req.path.endsWith('/health'),
 
   handler: (req, res) => {
     log.warn('Rate limit exceeded', { requestId: req.id, ip: req.ip, url: req.originalUrl })

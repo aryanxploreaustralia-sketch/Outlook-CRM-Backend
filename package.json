@@ -1,0 +1,63 @@
+{
+  "name": "outlook-automation-crm-backend",
+  "version": "1.0.0",
+  "description": "Express + MongoDB API for the Outlook Automation CRM.",
+  "private": true,
+  "type": "module",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=20.11.0"
+  },
+  "scripts": {
+    "dev": "nodemon",
+    "start": "cross-env NODE_ENV=production node src/server.js",
+    "start:local": "node src/server.js",
+    "lint": "oxlint src scripts",
+    "lint:fix": "oxlint src scripts --fix",
+    "generate:secrets": "node scripts/generate-secrets.js",
+    "diagnose:graph": "node scripts/diagnose-graph.js",
+    "seed:provider": "node scripts/seed-provider.js",
+    "forensic:identity": "node scripts/forensic-identity.js",
+    "migrate:identity": "node scripts/migrate-user-identity.js",
+    "migrate:google-index": "node scripts/migrate-user-google-index.js",
+    "migrate:mailboxes": "node scripts/migrate-connected-mailboxes.js",
+    "verify:mailboxes": "node scripts/verify-multi-mailbox.js",
+    "repair:workspace": "node scripts/repair-workspace-ownership.js",
+    "config:check": "node -e \"import('./src/config/index.js').then(m=>{console.log(JSON.stringify(m.config,null,2));process.exit(0)})\"",
+    "seed:contacts": "node scripts/seed-contacts.js",
+    "seed:campaigns": "node scripts/seed-campaigns.js",
+    "seed:leads": "node scripts/seed-leads.js",
+    "backfill:companies": "node scripts/backfill-companies.js",
+    "seed:conversations": "node scripts/seed-conversations.js",
+    "db:reset-business": "node scripts/reset-business-data.js"
+  },
+  "keywords": [
+    "outlook",
+    "crm",
+    "email-automation",
+    "express",
+    "mongodb",
+    "microsoft-graph"
+  ],
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@azure/msal-node": "^5.4.3",
+    "@microsoft/microsoft-graph-client": "^3.0.7",
+    "compression": "^1.8.1",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.6.1",
+    "helmet": "^8.3.0",
+    "mongoose": "^9.8.1",
+    "winston": "^3.19.0",
+    "winston-daily-rotate-file": "^5.0.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "cross-env": "^10.1.0",
+    "nodemon": "^3.1.14",
+    "oxlint": "^1.76.0"
+  }
+}

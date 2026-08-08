@@ -16,34 +16,86 @@
 // Lead pipeline
 // ---------------------------------------------------------------------------
 
-/** Stages of a travel enquiry, in pipeline order. */
+/**
+ * Stages of a travel enquiry.
+ *
+ * These are the four values the sales workbook has always recorded in its
+ * `Status` column, and they are now the CRM's whole vocabulary. The register is
+ * a record of enquiries the office already tracks this way; a longer pipeline
+ * invented stages nobody maintained, and forced every imported historical
+ * enquiry through a translation that lost the office's own word for it.
+ *
+ * Stored lower case and displayed through `LEAD_STAGE_LABELS`, which is the
+ * convention every other enum in this codebase follows — the stored token is
+ * never what the user reads.
+ *
+ * ## Replacing the previous ten stages
+ *
+ * `new`, `quoted`, `follow_up`, `interested`, `negotiation`, `visa_process`,
+ * `booked`, `completed`, `cancelled` and `lost` are gone. Documents written
+ * before this change still hold those strings, so `LEGACY_STAGE_ALIASES` below
+ * maps every one of them onto its replacement. Nothing reads a stage without
+ * going through that map, and `scripts/migrate-lead-stages.js` rewrites stored
+ * documents when you choose to run it.
+ */
 export const LEAD_STAGE = Object.freeze({
-  NEW: 'new',
-  QUOTED: 'quoted',
-  FOLLOW_UP: 'follow_up',
-  INTERESTED: 'interested',
-  NEGOTIATION: 'negotiation',
-  VISA_PROCESS: 'visa_process',
-  BOOKED: 'booked',
-  COMPLETED: 'completed',
-  CANCELLED: 'cancelled',
-  LOST: 'lost',
+  ACTIVE: 'active',
+  CONFIRMED: 'confirmed',
+  INACTIVE: 'inactive',
+  CLOSED: 'closed',
 })
 
 export const LEAD_STAGE_VALUES = Object.freeze(Object.values(LEAD_STAGE))
 
 export const LEAD_STAGE_LABELS = Object.freeze({
-  new: 'New',
-  quoted: 'Quoted',
-  follow_up: 'Follow Up',
-  interested: 'Interested',
-  negotiation: 'Negotiation',
-  visa_process: 'Visa Process',
-  booked: 'Booked',
-  completed: 'Completed',
-  cancelled: 'Cancelled',
-  lost: 'Lost',
+  active: 'Active',
+  confirmed: 'Confirmed',
+  inactive: 'Inactive',
+  closed: 'Closed',
 })
+
+/**
+ * Every stage this application has ever stored, mapped onto the four above.
+ *
+ * Two jobs. It lets `normaliseStage` read a document written before the
+ * vocabulary changed without that lead disappearing from a filter or crashing a
+ * badge, and it is the table `scripts/migrate-lead-stages.js` rewrites with.
+ *
+ * The mapping preserves what each old stage *meant*, not where it sat in the
+ * old ordering: everything before a booking is work in progress (`active`),
+ * a chase is `inactive`, a booking is `confirmed`, and every terminal outcome
+ * — completed, cancelled or lost — is `closed`. That last collapse is lossy and
+ * deliberately so; the workbook has never distinguished them.
+ */
+export const LEGACY_STAGE_ALIASES = Object.freeze({
+  new: LEAD_STAGE.ACTIVE,
+  quoted: LEAD_STAGE.ACTIVE,
+  interested: LEAD_STAGE.ACTIVE,
+  negotiation: LEAD_STAGE.ACTIVE,
+  visa_process: LEAD_STAGE.ACTIVE,
+  follow_up: LEAD_STAGE.INACTIVE,
+  booked: LEAD_STAGE.CONFIRMED,
+  completed: LEAD_STAGE.CLOSED,
+  cancelled: LEAD_STAGE.CLOSED,
+  lost: LEAD_STAGE.CLOSED,
+})
+
+/**
+ * Resolves any stored or supplied stage to one of the four.
+ *
+ * Returns `null` for a value that is neither current nor legacy, so a caller
+ * can tell "unrecognised" from "defaulted" and refuse rather than silently
+ * filing an arbitrary string.
+ *
+ * @param {unknown} value
+ * @returns {?string}
+ */
+export function normaliseStage(value) {
+  const text = String(value ?? '').trim().toLowerCase()
+  if (!text) return null
+  if (LEAD_STAGE_VALUES.includes(text)) return text
+  return LEGACY_STAGE_ALIASES[text] ?? null
+}
 
 /**
  * Order for the pipeline board.
@@ -53,33 +105,30 @@ export const LEAD_STAGE_LABELS = Object.freeze({
  * be added without silently reordering the board.
  */
 export const LEAD_STAGE_ORDER = Object.freeze([
-  LEAD_STAGE.NEW,
-  LEAD_STAGE.QUOTED,
-  LEAD_STAGE.FOLLOW_UP,
-  LEAD_STAGE.INTERESTED,
-  LEAD_STAGE.NEGOTIATION,
-  LEAD_STAGE.VISA_PROCESS,
-  LEAD_STAGE.BOOKED,
-  LEAD_STAGE.COMPLETED,
-  LEAD_STAGE.CANCELLED,
-  LEAD_STAGE.LOST,
+  LEAD_STAGE.ACTIVE,
+  LEAD_STAGE.INACTIVE,
+  LEAD_STAGE.CONFIRMED,
+  LEAD_STAGE.CLOSED,
 ])
 
 /**
  * Stages a campaign may target.
  *
- * The exclusions are the point. Emailing a `booked` traveller a "still
- * interested?" offer is an embarrassment; emailing a `lost` or `cancelled` lead
- * is how a sending domain earns spam complaints. This set is enforced in the
- * audience resolver, not merely suggested in the UI, because the UI is not the
- * only way an audience gets built.
+ * The exclusions are the point. Emailing a `confirmed` traveller a "still
+ * interested?" offer is an embarrassment; emailing a `closed` enquiry is how a
+ * sending domain earns spam complaints. This set is enforced in the audience
+ * resolver, not merely suggested in the UI, because the UI is not the only way
+ * an audience gets built.
+ *
+ * `inactive` is included, and that is the one entry worth defending: it is
+ * where the old `follow_up` stage landed, which was targetable, and a dormant
+ * enquiry is precisely the audience a re-engagement campaign exists for. The
+ * eligible/blocked split therefore means exactly what it meant before the
+ * vocabulary changed — no lead became mailable, and none stopped being so.
  */
 export const CAMPAIGN_ELIGIBLE_STAGES = Object.freeze([
-  LEAD_STAGE.NEW,
-  LEAD_STAGE.QUOTED,
-  LEAD_STAGE.FOLLOW_UP,
-  LEAD_STAGE.INTERESTED,
-  LEAD_STAGE.NEGOTIATION,
+  LEAD_STAGE.ACTIVE,
+  LEAD_STAGE.INACTIVE,
 ])
 
 /** Stages that must never receive campaign mail. */
@@ -88,45 +137,50 @@ export const CAMPAIGN_BLOCKED_STAGES = Object.freeze(
 )
 
 /** Stages meaning the enquiry is finished, one way or another. */
-export const TERMINAL_STAGES = Object.freeze([
-  LEAD_STAGE.COMPLETED,
-  LEAD_STAGE.CANCELLED,
-  LEAD_STAGE.LOST,
-])
-
-/** Stages counting as commercially won. */
-export const WON_STAGES = Object.freeze([LEAD_STAGE.BOOKED, LEAD_STAGE.COMPLETED])
+export const TERMINAL_STAGES = Object.freeze([LEAD_STAGE.CLOSED])
 
 /**
- * How the workbook's `Status` column maps onto the pipeline.
+ * Stages counting as commercially won.
  *
- * The sheet carries only five values across 1,698 rows — `Active`, `Inactive`,
- * `Closed`, `closed`, `Confirmed` — because it was never a pipeline, just a
- * flag. The mapping is therefore lossy in one direction only: it never invents
- * a stage the sheet cannot justify.
+ * `confirmed` only. It is the one word in the vocabulary that unambiguously
+ * means a booking was taken.
  *
- * `Active` becomes `new` rather than a later stage: the sheet does not record
- * whether a quote was sent, and guessing `quoted` would show revenue movement
- * that never happened.
+ * `closed` is deliberately excluded, and this is a real loss of reporting
+ * precision worth stating plainly: the old `completed` (a finished trip, won)
+ * and the old `cancelled`/`lost` (not won) all collapse into it, so a closed
+ * enquiry cannot be attributed either way. Counting them all as won would
+ * inflate the figure with abandoned enquiries; counting none of them loses the
+ * completed trips. The narrower, defensible reading is taken here, and
+ * separating the two again needs a fifth word in the workbook rather than a
+ * guess in this file.
+ */
+export const WON_STAGES = Object.freeze([LEAD_STAGE.CONFIRMED])
+
+/**
+ * How the workbook's `Status` column maps onto a stage.
+ *
+ * The first four entries are the whole point of the vocabulary: the sheet's
+ * words *are* the CRM's stages, so an imported historical enquiry keeps the
+ * office's own description of it and nothing is translated or inferred.
+ *
+ * The rest are the ten stages this application used previously, kept so a
+ * workbook exported from an older build — where the `Status` column was written
+ * as "Follow Up" or "Booked" — still imports onto the right stage instead of
+ * being reported as unrecognised.
  */
 export const SHEET_STATUS_TO_STAGE = Object.freeze({
-  active: LEAD_STAGE.NEW,
-  inactive: LEAD_STAGE.FOLLOW_UP,
-  confirmed: LEAD_STAGE.BOOKED,
-  closed: LEAD_STAGE.COMPLETED,
-  cancelled: LEAD_STAGE.CANCELLED,
-  lost: LEAD_STAGE.LOST,
-  // Values the team may start typing once the CRM is live.
-  quoted: LEAD_STAGE.QUOTED,
-  'follow up': LEAD_STAGE.FOLLOW_UP,
-  followup: LEAD_STAGE.FOLLOW_UP,
-  interested: LEAD_STAGE.INTERESTED,
-  negotiation: LEAD_STAGE.NEGOTIATION,
-  visa: LEAD_STAGE.VISA_PROCESS,
-  'visa process': LEAD_STAGE.VISA_PROCESS,
-  booked: LEAD_STAGE.BOOKED,
-  completed: LEAD_STAGE.COMPLETED,
-  new: LEAD_STAGE.NEW,
+  // The workbook's own vocabulary, one to one.
+  active: LEAD_STAGE.ACTIVE,
+  inactive: LEAD_STAGE.INACTIVE,
+  confirmed: LEAD_STAGE.CONFIRMED,
+  closed: LEAD_STAGE.CLOSED,
+
+  // Superseded stages, so an older export still imports.
+  ...LEGACY_STAGE_ALIASES,
+  'follow up': LEAD_STAGE.INACTIVE,
+  followup: LEAD_STAGE.INACTIVE,
+  visa: LEAD_STAGE.ACTIVE,
+  'visa process': LEAD_STAGE.ACTIVE,
 })
 
 // ---------------------------------------------------------------------------

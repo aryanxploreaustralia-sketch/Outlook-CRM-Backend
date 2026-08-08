@@ -28,7 +28,7 @@ import { Lead } from '../../../models/lead.model.js'
 import { Mailbox } from '../../../models/mailbox.model.js'
 import { User } from '../../../models/user.model.js'
 import { CAMPAIGN_STATUS_LABELS } from '../../campaigns/constants/campaignConstants.js'
-import { LEAD_STAGE_LABELS } from '../../leads/constants/leadConstants.js'
+import { LEAD_STAGE_LABELS, WON_STAGES } from '../../leads/constants/leadConstants.js'
 import { STALE_LEAD_DAYS } from '../constants/adminConstants.js'
 
 /** Escapes a caller-supplied search term before it reaches a regex. */
@@ -207,7 +207,8 @@ export async function listAdminLeads(query = {}) {
       total: items.length,
       unassigned: items.filter((item) => item.assignedTo === null).length,
       stale: items.filter((item) => item.isStale).length,
-      won: items.filter((item) => item.stage === 'booked' || item.stage === 'completed').length,
+      // Shared constant, not hardcoded stages — see WON_STAGES.
+      won: items.filter((item) => WON_STAGES.includes(item.stage)).length,
     },
     meta: {
       staleAfterDays: STALE_LEAD_DAYS,

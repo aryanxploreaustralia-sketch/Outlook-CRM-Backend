@@ -35,6 +35,7 @@ import { Conversation } from '../../../models/conversation.model.js'
 import { Lead } from '../../../models/lead.model.js'
 import { Mail } from '../../../models/mail.model.js'
 import { MAIL_STATUS } from '../../../constants/mailStatus.js'
+import { TERMINAL_STAGES, WON_STAGES } from '../../leads/constants/leadConstants.js'
 import { ANALYTICS_GRANULARITY } from '../constants/adminConstants.js'
 
 /** Milliseconds per bucket unit, for building the empty scaffold. */
@@ -239,8 +240,17 @@ export async function leadsByOwner({ limit = 20 } = {}) {
       $group: {
         _id: '$owner',
         leads: { $sum: 1 },
-        won: { $sum: { $cond: [{ $in: ['$stage', ['booked', 'completed']] }, 1, 0] } },
-        lost: { $sum: { $cond: [{ $in: ['$stage', ['lost', 'cancelled']] }, 1, 0] } },
+        /**
+         * Read from the shared constants rather than hardcoded stage strings,
+         * which counted zero the moment the vocabulary changed.
+         *
+         * `lost` now means "concluded without a confirmed booking". The four
+         * stages cannot express won-versus-lost among closed enquiries — see
+         * WON_STAGES — so this is the closest honest reading, and the two sets
+         * no longer overlap.
+         */
+        won: { $sum: { $cond: [{ $in: ['$stage', [...WON_STAGES]] }, 1, 0] } },
+        lost: { $sum: { $cond: [{ $in: ['$stage', [...TERMINAL_STAGES]] }, 1, 0] } },
         emailed: { $sum: { $cond: [{ $eq: ['$autoMail.status', 'sent'] }, 1, 0] } },
       },
     },

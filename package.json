@@ -21,6 +21,7 @@
     "migrate:identity": "node scripts/migrate-user-identity.js",
     "migrate:google-index": "node scripts/migrate-user-google-index.js",
     "migrate:mailboxes": "node scripts/migrate-connected-mailboxes.js",
+    "migrate:lead-stages": "node scripts/migrate-lead-stages.js",
     "verify:mailboxes": "node scripts/verify-multi-mailbox.js",
     "repair:workspace": "node scripts/repair-workspace-ownership.js",
     "config:check": "node -e \"import('./src/config/index.js').then(m=>{console.log(JSON.stringify(m.config,null,2));process.exit(0)})\"",

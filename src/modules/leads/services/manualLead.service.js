@@ -209,9 +209,9 @@ export async function createLeadManually({
       paxText: data.paxText,
       adultCount: data.adultCount,
       childCount: data.childCount,
-      stage: data.stage ?? LEAD_STAGE.NEW,
+      stage: data.stage ?? LEAD_STAGE.ACTIVE,
       stageHistory: [
-        { to: data.stage ?? LEAD_STAGE.NEW, at: new Date(), by: createdBy, reason: 'Created manually' },
+        { to: data.stage ?? LEAD_STAGE.ACTIVE, at: new Date(), by: createdBy, reason: 'Created manually' },
       ],
       handledBy: data.handledBy,
       internalNotes: data.internalNotes,

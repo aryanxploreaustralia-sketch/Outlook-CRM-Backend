@@ -38,18 +38,19 @@ const log = createContextLogger('conversations')
 /**
  * Where a genuine human reply moves an enquiry.
  *
- * A map rather than "advance one step", because the pipeline is not a straight
- * line: `visa_process` is later than `negotiation` but a reply during visa
- * paperwork means nothing has changed commercially, so it stays put.
+ * A map rather than "advance one step", so that each stage states its own
+ * answer and a stage with nothing to say says so explicitly.
+ *
+ * Under the four-stage vocabulary only one transition is left, and it is the
+ * one that matters: a customer answering a dormant enquiry has just made it a
+ * live one, so `inactive` becomes `active`. An enquiry that is already active
+ * stays put — a further reply is conversation, not progress — and `confirmed`
+ * and `closed` are handled by the terminal check below, which a reply must
+ * never reverse.
  */
 export const REPLY_STAGE_TRANSITIONS = Object.freeze({
-  [LEAD_STAGE.NEW]: LEAD_STAGE.INTERESTED,
-  [LEAD_STAGE.QUOTED]: LEAD_STAGE.INTERESTED,
-  [LEAD_STAGE.FOLLOW_UP]: LEAD_STAGE.INTERESTED,
-  // Already engaged; a further reply is conversation, not progress.
-  [LEAD_STAGE.INTERESTED]: null,
-  [LEAD_STAGE.NEGOTIATION]: null,
-  [LEAD_STAGE.VISA_PROCESS]: null,
+  [LEAD_STAGE.INACTIVE]: LEAD_STAGE.ACTIVE,
+  [LEAD_STAGE.ACTIVE]: null,
 })
 
 /** Reply kinds that count as a human being interested. */
@@ -108,7 +109,10 @@ export async function applyReplyToLead({
     }
   }
 
-  if (TERMINAL_STAGES.includes(lead.stage) || lead.stage === LEAD_STAGE.BOOKED) {
+  // `confirmed` sits alongside the terminal stages here, not in them: a
+  // confirmed booking is not finished, but a reply must not drag it backwards
+  // to `active` as though the deal were still being won.
+  if (TERMINAL_STAGES.includes(lead.stage) || lead.stage === LEAD_STAGE.CONFIRMED) {
     await lead.save()
     return {
       moved: false,

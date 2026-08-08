@@ -37,6 +37,11 @@ import { Mail } from '../../../models/mail.model.js'
 import { Mailbox } from '../../../models/mailbox.model.js'
 import { Session } from '../../../models/session.model.js'
 import { MAIL_STATUS } from '../../../constants/mailStatus.js'
+import {
+  LEAD_STAGE_LABELS,
+  LEAD_STAGE_ORDER,
+  WON_STAGES,
+} from '../../leads/constants/leadConstants.js'
 
 /** Mail that actually left. `replied` is terminal *after* sent, so it counts. */
 const SENT_STATUSES = [MAIL_STATUS.SENT, MAIL_STATUS.REPLIED]
@@ -102,7 +107,9 @@ export async function userActivityMetrics(window = {}) {
         $group: {
           _id: '$owner',
           leadsCreated: { $sum: 1 },
-          won: { $sum: { $cond: [{ $in: ['$stage', ['booked', 'completed']] }, 1, 0] } },
+          // Read from the shared constant: a hardcoded list here silently
+          // counted zero the moment the stage vocabulary changed.
+          won: { $sum: { $cond: [{ $in: ['$stage', [...WON_STAGES]] }, 1, 0] } },
         },
       },
     ]),
@@ -248,20 +255,23 @@ export async function mailboxTrend({ mailboxId, from, to }) {
 /**
  * The lead funnel and its movement.
  *
- * ## Stages are mapped, not invented
+ * ## One band per stage
  *
- * The brief asks for New / Contacted / Qualified / Converted / Closed. The
- * register's own stages are different and are the truth, so each requested band
- * is a documented grouping of real stages rather than a new field. The response
- * carries the mapping so the console can show what a band contains.
+ * These used to be five invented bands — New / Contacted / Qualified /
+ * Converted / Closed — each grouping several of the ten stages the register
+ * then carried. The register now carries exactly four, which are the sales
+ * workbook's own words, so a band *is* a stage and the grouping layer has
+ * nothing left to do. Each band still declares its `stages` array, because the
+ * response shape and the console that reads it are unchanged.
+ *
+ * Derived from `LEAD_STAGE_ORDER` rather than written out, so a stage cannot be
+ * added to the vocabulary and silently omitted from the funnel.
  */
-export const FUNNEL_BANDS = Object.freeze([
-  { key: 'new', label: 'New', stages: ['new'] },
-  { key: 'contacted', label: 'Contacted', stages: ['quoted', 'follow_up'] },
-  { key: 'qualified', label: 'Qualified', stages: ['interested', 'negotiation', 'visa_process'] },
-  { key: 'converted', label: 'Converted', stages: ['booked', 'completed'] },
-  { key: 'closed', label: 'Closed', stages: ['cancelled', 'lost'] },
-])
+export const FUNNEL_BANDS = Object.freeze(
+  LEAD_STAGE_ORDER.map((stage) =>
+    Object.freeze({ key: stage, label: LEAD_STAGE_LABELS[stage], stages: [stage] }),
+  ),
+)
 
 export async function leadFunnel(window = {}) {
   const [byStage, createdInWindow] = await Promise.all([

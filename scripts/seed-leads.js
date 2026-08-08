@@ -102,20 +102,18 @@ const REMARKS = [
 /**
  * Stage distribution.
  *
- * Weighted like a real quarter: most enquiries sit early, a handful convert,
- * a few die. A register where everything is `booked` teaches nothing.
+ * Weighted like a real quarter: most enquiries are live, a handful convert,
+ * a few go quiet or finish. A register where everything is `confirmed` teaches
+ * nothing.
+ *
+ * The weights approximate the real workbook's own distribution, where roughly
+ * 95% of rows are Active.
  */
 const STAGE_WEIGHTS = [
-  [LEAD_STAGE.NEW, 34],
-  [LEAD_STAGE.QUOTED, 20],
-  [LEAD_STAGE.FOLLOW_UP, 14],
-  [LEAD_STAGE.INTERESTED, 8],
-  [LEAD_STAGE.NEGOTIATION, 6],
-  [LEAD_STAGE.VISA_PROCESS, 4],
-  [LEAD_STAGE.BOOKED, 5],
-  [LEAD_STAGE.COMPLETED, 4],
-  [LEAD_STAGE.CANCELLED, 2],
-  [LEAD_STAGE.LOST, 3],
+  [LEAD_STAGE.ACTIVE, 62],
+  [LEAD_STAGE.INACTIVE, 14],
+  [LEAD_STAGE.CONFIRMED, 12],
+  [LEAD_STAGE.CLOSED, 12],
 ]
 
 function pickWeighted(entries, random) {

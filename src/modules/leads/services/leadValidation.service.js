@@ -186,15 +186,25 @@ export function parsePax(value) {
 }
 
 /**
- * Maps the sheet's status word onto a pipeline stage.
+ * Maps the sheet's `Status` word onto a stage.
  *
- * Unknown words default to `new` rather than throwing: the team will invent
- * vocabulary, and an import that fails on an unrecognised status is an import
- * that fails every month.
+ * The workbook's four words are the CRM's four stages, so the common case is an
+ * exact match and the value is carried across untranslated.
+ *
+ * An unrecognised word falls back to `active` and reports `recognised: false`
+ * rather than throwing. Two reasons it must not throw: the team will invent
+ * vocabulary, and an import that fails on one odd status is an import that
+ * fails every month. It must equally never store the word it was given — the
+ * stage is a closed enum, and writing an arbitrary string into it would be
+ * rejected by the schema at best and corrupt every stage filter at worst. The
+ * caller turns `recognised: false` into a visible warning.
+ *
+ * @param {unknown} value
+ * @returns {{ stage: string, recognised: boolean }}
  */
 export function parseStage(value) {
   const text = String(value ?? '').trim().toLowerCase()
-  if (!text) return { stage: LEAD_STAGE.NEW, recognised: false }
+  if (!text) return { stage: LEAD_STAGE.ACTIVE, recognised: false }
 
   const stage = SHEET_STATUS_TO_STAGE[text]
   if (stage) return { stage, recognised: true }
@@ -204,7 +214,7 @@ export function parseStage(value) {
     if (text.startsWith(word)) return { stage: mapped, recognised: true }
   }
 
-  return { stage: LEAD_STAGE.NEW, recognised: false }
+  return { stage: LEAD_STAGE.ACTIVE, recognised: false }
 }
 
 /**
@@ -300,7 +310,11 @@ export function validateLeadRow({ row, mapping, rowNumber, sheetName = '' }) {
 
   const { stage, recognised } = parseStage(raw[LEAD_FIELD.STAGE])
   if (raw[LEAD_FIELD.STAGE] && !recognised) {
-    note(LEAD_FIELD.STAGE, `Status "${raw[LEAD_FIELD.STAGE]}" is not a known stage; filed as New.`)
+    note(
+      LEAD_FIELD.STAGE,
+      `Status "${raw[LEAD_FIELD.STAGE]}" is not one of Active, Closed, Confirmed or ` +
+        'Inactive; filed as Active.',
+    )
   }
 
   const name = splitPersonName(person)

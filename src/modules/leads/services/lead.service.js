@@ -362,13 +362,19 @@ export async function leadStatistics({ owner }) {
     companies,
     contacts,
     totalLeads,
-    newLeads: stageCounts.new,
+    /**
+     * One count per stage, named for the four the register now carries.
+     *
+     * These replace `newLeads`/`followUps`/`negotiation`/`visaProcess`/
+     * `booked`/`completed`, which were named after stages that no longer
+     * exist and would each have resolved to `undefined`. `byStage` below is
+     * the keyed form and is what the UI actually reads.
+     */
+    active: stageCounts.active,
+    inactive: stageCounts.inactive,
+    confirmed: stageCounts.confirmed,
+    closed: stageCounts.closed,
     todaysQuotes,
-    followUps: stageCounts.follow_up,
-    negotiation: stageCounts.negotiation,
-    visaProcess: stageCounts.visa_process,
-    booked: stageCounts.booked,
-    completed: stageCounts.completed,
     campaignReady,
     recentLeads,
     upcomingTravel,

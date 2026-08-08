@@ -16,6 +16,7 @@ import {
   LEAD_STAGE_LABELS,
   LEAD_STAGE_ORDER,
   LEAD_STAGE_VALUES,
+  TERMINAL_STAGES,
   WON_STAGES,
 } from '../constants/leadConstants.js'
 
@@ -386,7 +387,10 @@ export async function leadStatistics({ owner }) {
      * time a new lead arrived, which reads as the team getting worse at selling.
      */
     conversionRate: (() => {
-      const decided = won + (stageCounts.lost ?? 0) + (stageCounts.cancelled ?? 0)
+      // "Decided" is every enquiry that reached an outcome: confirmed (won) or
+      // closed. Reading the retired `lost`/`cancelled` counts here left the
+      // denominator equal to `won`, which reported 100% forever.
+      const decided = TERMINAL_STAGES.reduce((sum, stage) => sum + (stageCounts[stage] ?? 0), won)
       return decided === 0 ? null : Math.round((won / decided) * 1000) / 10
     })(),
   }

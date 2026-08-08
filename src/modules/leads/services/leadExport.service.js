@@ -40,7 +40,15 @@ export const EXPORT_COLUMNS = Object.freeze([
   'Email',
   'Phone',
   'Destination',
-  'Quote Date',
+  /**
+   * The user's wording for `lead.quoteDate`, which is unchanged in the database.
+   *
+   * Renaming the header renames the column an exported workbook is re-imported
+   * by, so `querydate` was added to `LEAD_HEADER_SYNONYMS` alongside the
+   * existing `quotedate`/`qdate` entries — old spreadsheets and new exports both
+   * map onto the same field.
+   */
+  'Query Date',
   'Travel Date',
   'Pax',
   'City',
@@ -59,7 +67,7 @@ export const EXPORT_COLUMNS = Object.freeze([
 
 /** Columns written as real Excel dates rather than text. */
 const DATE_COLUMNS = Object.freeze([
-  'Quote Date',
+  'Query Date',
   'Travel Date',
   'Mail Sent At',
   'Last Reply At',
@@ -102,7 +110,8 @@ function toRow(lead) {
     Email: lead.email ?? '',
     Phone: (lead.phones ?? []).join(', '),
     Destination: MARKET_LABELS[lead.market] ?? lead.market ?? '',
-    'Quote Date': asDate(lead.quoteDate),
+    // Key must match the header in EXPORT_COLUMNS; the source field is unchanged.
+    'Query Date': asDate(lead.quoteDate),
 
     /**
      * The parsed date when there is one, the prose when there is not.

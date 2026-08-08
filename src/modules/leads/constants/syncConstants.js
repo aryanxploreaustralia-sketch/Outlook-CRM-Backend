@@ -79,7 +79,7 @@ export const FIELD_LABELS = Object.freeze({
   childCount: 'Children',
   handledBy: 'Handled by',
   internalNotes: 'Remark',
-  quoteDate: 'Quotation date',
+  quoteDate: 'Query Date',
   market: 'Market',
   stage: 'Status',
 })

@@ -287,7 +287,7 @@ export function validateLeadRow({ row, mapping, rowNumber, sheetName = '' }) {
   // --- Everything else degrades rather than failing ------------------------
   const quote = parseDateCell(raw[LEAD_FIELD.QUOTE_DATE])
   if (!quote.date && quote.text) {
-    note(LEAD_FIELD.QUOTE_DATE, `Quotation date "${quote.text}" could not be read as a date.`)
+    note(LEAD_FIELD.QUOTE_DATE, `Query Date "${quote.text}" could not be read as a date.`)
   }
 
   const travel = parseDateCell(raw[LEAD_FIELD.TRAVEL_DATE])

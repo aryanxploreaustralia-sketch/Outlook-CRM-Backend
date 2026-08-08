@@ -225,7 +225,7 @@ export const LEAD_FIELD_VALUES = Object.freeze(Object.values(LEAD_FIELD))
 
 export const LEAD_FIELD_LABELS = Object.freeze({
   reference: 'Reference (business key)',
-  quoteDate: 'Quotation Date',
+  quoteDate: 'Query Date',
   travelDate: 'Travel Date',
   city: 'Departure City',
   companyName: 'Company / Source',
@@ -265,7 +265,16 @@ export const LEAD_HEADER_SYNONYMS = Object.freeze({
   referencenumber: LEAD_FIELD.REFERENCE, quoteref: LEAD_FIELD.REFERENCE,
   fileno: LEAD_FIELD.REFERENCE, filenumber: LEAD_FIELD.REFERENCE,
 
-  // Quotation date
+  /**
+   * Query date — shown to users as "Query Date", stored as `quoteDate`.
+   *
+   * `querydate` is the header this application now *writes* on an export.
+   * Every older spelling is kept, and deliberately: customer spreadsheets in
+   * circulation are headed "Q Date", "Quote Date" or "Quotation Date", and
+   * dropping any of them would silently map that column to "do not import" —
+   * the enquiry dates would vanish from the import with no error raised.
+   */
+  querydate: LEAD_FIELD.QUOTE_DATE,
   qdate: LEAD_FIELD.QUOTE_DATE, quotedate: LEAD_FIELD.QUOTE_DATE,
   quotationdate: LEAD_FIELD.QUOTE_DATE, enquirydate: LEAD_FIELD.QUOTE_DATE,
   inquirydate: LEAD_FIELD.QUOTE_DATE, date: LEAD_FIELD.QUOTE_DATE,

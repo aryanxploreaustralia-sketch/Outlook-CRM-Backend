@@ -364,7 +364,7 @@ export const importFile = asyncHandler(async (req, res) => {
       throw ApiError.badRequest(
         `"${detected.sheet}" looks like a lead register, not a contact list: ${detected.reason} ` +
           `Importing it here would keep the ${detected.columns} contact column(s) and discard the ` +
-          'reference, quotation date, travel date, party size and status on every row. ' +
+          'reference, query date, travel date, party size and status on every row. ' +
           'Upload it at POST /api/v1/leads/workbook/import (the Leads → Import workbook screen) ' +
           'to keep the enquiries. Send "contactsOnly": true to import the people only.',
       )

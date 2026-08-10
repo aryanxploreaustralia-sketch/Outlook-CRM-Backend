@@ -27,6 +27,7 @@ import {
   ADMIN_DEFAULT_PAGE_SIZE,
   ADMIN_MAX_PAGE_SIZE,
 } from '../constants/adminConstants.js'
+import { LEAD_FIELD_VALUES } from '../../leads/constants/leadConstants.js'
 
 /**
  * A CRM email address.
@@ -97,6 +98,37 @@ export const adminUserListQuerySchema = z
       path: ['lastLoginFrom'],
     },
   )
+
+/**
+ * Wizard options for `POST /admin/users/:id/leads/import`.
+ *
+ * Every field is optional, and all of them absent is the invitation flow: no
+ * sheet selection, no mapping override, not a preview. That case must keep
+ * meaning "import every lead sheet", so nothing here has a default that would
+ * change it.
+ *
+ * `mapping` mirrors the CRM importer's own schema — the field is constrained to
+ * `LEAD_FIELD_VALUES`, so a client cannot map a column onto an attribute the
+ * importer does not recognise.
+ */
+export const adminUserLeadImportSchema = z.object({
+  /** Worksheets the admin chose. Omitted means every lead register in the file. */
+  sheets: z.array(z.string().min(1)).max(50).optional(),
+
+  /** Column corrections, applied only when exactly one sheet is selected. */
+  mapping: z
+    .array(
+      z.object({
+        column: z.string(),
+        index: z.coerce.number().int().min(0),
+        field: z.enum(LEAD_FIELD_VALUES),
+      }),
+    )
+    .optional(),
+
+  /** Validate and report; write nothing. */
+  dryRun: z.boolean().optional().default(false),
+})
 
 /** A Mongo ObjectId in a path parameter. */
 export const objectIdSchema = z
@@ -171,6 +203,7 @@ export const adminUserRoleSchema = z.object({
 
 export default {
   adminUserInviteSchema,
+  adminUserLeadImportSchema,
   adminUserListQuerySchema,
   adminUserDeleteSchema,
   adminUserRoleSchema,

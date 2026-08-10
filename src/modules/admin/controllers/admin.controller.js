@@ -73,6 +73,7 @@ import {
   adminUserInviteSchema,
   adminUserListQuerySchema,
   adminUserDeleteSchema,
+  adminUserLeadImportSchema,
   adminUserRoleSchema,
   microsoftIdentitySchema,
   objectIdSchema,
@@ -218,12 +219,34 @@ export const postAdminUserLeadImport = asyncHandler(async (req, res) => {
 
   const filename = String(req.get('x-filename') ?? 'workbook.xlsx').slice(0, 255)
 
+  /**
+   * Wizard options, in `X-Import-Options` like every other raw upload.
+   *
+   * All optional, and absent is the invitation flow's case: no selection, no
+   * mapping override, not a preview — import every lead sheet, which is what
+   * that flow has always done and continues to do.
+   */
+  const options = adminUserLeadImportSchema.parse(
+    JSON.parse(req.get('x-import-options') ?? '{}'),
+  )
+
   const result = await assignWorkbookToUser({
     userId: id,
     buffer,
     filename,
     actor: req.auth.user,
+    sheets: options.sheets ?? null,
+    mapping: options.mapping ?? null,
+    dryRun: options.dryRun,
   })
+
+  // A preview writes nothing, so there is nothing to record and no 201 to give.
+  if (result.dryRun) {
+    return sendSuccess(res, {
+      message: `${result.previews.reduce((sum, p) => sum + p.counts.valid, 0)} row(s) are importable.`,
+      data: result,
+    })
+  }
 
   await recordAudit({
     req,

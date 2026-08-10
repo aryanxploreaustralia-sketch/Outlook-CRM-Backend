@@ -45,7 +45,7 @@ import { createContextLogger } from '../../../utils/logger.js'
 import { fromXlsx, listSheets } from '../../contacts/utils/xlsx.js'
 import { IMPORT_STATUS, IMPORT_STEP } from '../../import/constants/importConstants.js'
 import { SHEET_KIND } from '../../leads/constants/leadConstants.js'
-import { importSheet } from '../../leads/services/leadImport.service.js'
+import { analyseSheet, importSheet } from '../../leads/services/leadImport.service.js'
 import { classifyWorkbook } from '../../leads/services/worksheetClassifier.service.js'
 
 const log = createContextLogger('admin-user-leads')
@@ -90,7 +90,15 @@ async function resolveTargetUser(userId) {
  *   issues: Array<object>,
  * }>}
  */
-export async function assignWorkbookToUser({ userId, buffer, filename, actor }) {
+export async function assignWorkbookToUser({
+  userId,
+  buffer,
+  filename,
+  actor,
+  sheets = null,
+  mapping = null,
+  dryRun = false,
+}) {
   const user = await resolveTargetUser(userId)
 
   // Read the workbook once and classify every tab, exactly as the import wizard
@@ -118,7 +126,103 @@ export async function assignWorkbookToUser({ userId, buffer, filename, actor }) 
     parsedSheets.map(({ name, parsed, rows }) => ({ name, headers: parsed.headers, rows })),
   )
 
-  const leadSheets = classified.sheets.filter((sheet) => sheet.kind === SHEET_KIND.LEADS)
+  /**
+   * Which sheets the caller asked for.
+   *
+   * `sheets` is the wizard's selection, made after the admin has seen the
+   * classification. Omitting it keeps the original behaviour — every sheet the
+   * classifier calls a lead register — which is what the invitation flow relies
+   * on, since it has no wizard and no moment to ask.
+   *
+   * A named sheet the classifier did *not* call a lead register is refused
+   * rather than imported on request: the classification is the same judgement
+   * the preview showed, and quietly overriding it would import a hotel
+   * operations tab as enquiries.
+   */
+  const chosen = Array.isArray(sheets) && sheets.length > 0 ? new Set(sheets) : null
+
+  if (chosen) {
+    const known = new Set(classified.sheets.map((sheet) => sheet.name))
+    const unknown = [...chosen].filter((name) => !known.has(name))
+
+    if (unknown.length > 0) {
+      throw ApiError.badRequest(
+        `"${filename}" has no worksheet named ${unknown.map((n) => `"${n}"`).join(', ')}.`,
+        { code: 'SHEET_NOT_FOUND' },
+      )
+    }
+  }
+
+  const leadSheets = classified.sheets.filter(
+    (sheet) => sheet.kind === SHEET_KIND.LEADS && (!chosen || chosen.has(sheet.name)),
+  )
+
+  if (chosen && leadSheets.length === 0) {
+    throw ApiError.badRequest(
+      'None of the selected worksheets is a lead register, so nothing would be imported.',
+      { code: 'NO_LEAD_SHEETS' },
+    )
+  }
+
+  /**
+   * A mapping the admin corrected, merged over the detected one.
+   *
+   * Applied by column index and only to the sheet it was reviewed against, so
+   * a correction cannot leak onto a different sheet with different columns.
+   * The same merge the CRM importer performs, for the same reason: a supplied
+   * mapping is an override of the classifier, never a replacement for it.
+   */
+  const mappingFor = (sheet) => {
+    if (!mapping || !Array.isArray(mapping)) return sheet.mapping
+    if (chosen && chosen.size !== 1) return sheet.mapping
+
+    return sheet.mapping.map((entry) => {
+      const override = mapping.find((candidate) => candidate.index === entry.index)
+      return override ? { ...entry, field: override.field, source: 'manual' } : entry
+    })
+  }
+
+  /**
+   * Preview: validate every selected sheet and write nothing.
+   *
+   * Runs `analyseSheet` — the same function the CRM wizard's preview step uses
+   * — against the **target** user, so "already on file" counts reflect that
+   * user's register rather than the administrator's.
+   */
+  if (dryRun) {
+    const previews = []
+
+    for (const sheet of leadSheets) {
+      const source = parsedSheets.find((entry) => entry.name === sheet.name)
+      const analysis = await analyseSheet({
+        rows: source.rows,
+        mapping: mappingFor(sheet),
+        sheetName: sheet.name,
+        headerRowNumber: source.parsed.headerRowNumber,
+        owner: user._id,
+      })
+
+      previews.push({ name: sheet.name, mapping: mappingFor(sheet), ...analysis })
+    }
+
+    return {
+      dryRun: true,
+      user: {
+        id: String(user._id),
+        email: user.email,
+        displayName: user.displayName ?? null,
+      },
+      sheets: classified.sheets.map((sheet) => ({
+        name: sheet.name,
+        kind: sheet.kind,
+        reason: sheet.reason ?? null,
+        rowCount: sheet.rowCount ?? 0,
+        selectable: sheet.kind === SHEET_KIND.LEADS,
+        mapping: sheet.mapping,
+      })),
+      previews,
+    }
+  }
 
   if (leadSheets.length === 0) {
     throw ApiError.badRequest(
@@ -155,6 +259,22 @@ export async function assignWorkbookToUser({ userId, buffer, filename, actor }) 
     for (const sheet of classified.sheets) {
       const source = parsedSheets.find((entry) => entry.name === sheet.name)
 
+      // A sheet the admin did not select is reported as skipped, not silently
+      // dropped — the result must account for every tab in the file.
+      if (chosen && !chosen.has(sheet.name)) {
+        perSheet.push({
+          name: sheet.name,
+          kind: sheet.kind,
+          imported: false,
+          reason: 'Not selected for import.',
+          created: 0,
+          updated: 0,
+          invalid: 0,
+          failed: 0,
+        })
+        continue
+      }
+
       if (sheet.kind !== SHEET_KIND.LEADS) {
         perSheet.push({
           name: sheet.name,
@@ -173,7 +293,7 @@ export async function assignWorkbookToUser({ userId, buffer, filename, actor }) 
       // difference, and it is the whole feature.
       const result = await importSheet({
         rows: source.rows,
-        mapping: sheet.mapping,
+        mapping: mappingFor(sheet),
         sheetName: sheet.name,
         headerRowNumber: source.parsed.headerRowNumber,
         owner: user._id,

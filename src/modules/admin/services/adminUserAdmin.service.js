@@ -218,7 +218,13 @@ export async function inviteUser(input, actor) {
    * error cannot.
    */
   if (microsoftEmail) {
-    const claimed = await User.findOne({ microsoftEmail }).select('email').lean()
+    // Scoped to live accounts for the same reason `findUserByEmail` is: a
+    // deleted user must not hold a Microsoft address against their
+    // replacement's invitation. See the note on the residual index constraint
+    // in that function's caller — the *stored* value is untouched either way.
+    const claimed = await User.findOne({ microsoftEmail, isDeleted: { $ne: true } })
+      .select('email')
+      .lean()
 
     if (claimed) {
       throw ApiError.conflict(

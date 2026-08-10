@@ -180,8 +180,22 @@ function applyProfile(user, { claims, email }) {
 export async function resolveGoogleUser({ claims }) {
   const { email } = screenClaims(claims)
 
+  /**
+   * Every lookup below is scoped to live accounts with `isDeleted: { $ne: true }`.
+   *
+   * A soft-deleted user keeps their `googleId` and their address — their
+   * history is preserved intact — but they must not answer for them. Without
+   * the scope, deleting somebody and re-inviting the same address produced a
+   * sign-in that matched the *removed* account and was refused, so the new
+   * account could never be reached.
+   *
+   * `$ne: true` rather than `false`, so documents predating the field still
+   * count as live.
+   */
+  const LIVE = { isDeleted: { $ne: true } }
+
   // --- 1. Known Google identity -------------------------------------------
-  const byGoogleId = await User.findOne({ googleId: claims.sub })
+  const byGoogleId = await User.findOne({ googleId: claims.sub, ...LIVE })
 
   if (byGoogleId) {
     assertCanSignIn(byGoogleId)
@@ -197,7 +211,7 @@ export async function resolveGoogleUser({ claims }) {
   }
 
   // --- 2. Existing CRM account with the same verified address --------------
-  const byEmail = await User.findOne({ email })
+  const byEmail = await User.findOne({ email, ...LIVE })
 
   if (byEmail) {
     assertCanSignIn(byEmail)
@@ -217,7 +231,40 @@ export async function resolveGoogleUser({ claims }) {
      */
     if (!byEmail.microsoftId) byEmail.provider = AUTH_PROVIDERS.GOOGLE
 
-    await byEmail.save()
+    /**
+     * The one case the lookup scope above cannot resolve on its own.
+     *
+     * `applyProfile` has just stamped `googleId` onto this account. The unique
+     * partial index on `googleId` covers *every* document holding a string,
+     * deleted or not — so if the removed account this address once belonged to
+     * still carries the same `sub`, this write is rejected with a duplicate
+     * key.
+     *
+     * Releasing the old value would free the index, and is deliberately not
+     * done here: a deleted user's identifiers are history, and rewriting them
+     * to make a later sign-in convenient is not this function's decision to
+     * take. So the situation is reported instead of crashing — an operator can
+     * resolve it by restoring the old account or by clearing its Google link
+     * from the admin console, and either way they are told which it is.
+     */
+    try {
+      await byEmail.save()
+    } catch (error) {
+      if (error?.code === 11_000) {
+        log.error('A deleted account still holds this Google identity', {
+          userId: String(byEmail._id),
+          email,
+        })
+
+        throw ApiError.conflict(
+          'This Google account is still linked to a removed CRM account, so it ' +
+            'cannot yet be attached to the new one. Ask an administrator to ' +
+            'unlink or restore the removed account.',
+          { code: GOOGLE_AUTH_ERROR.IDENTITY_HELD_BY_DELETED, cause: error },
+        )
+      }
+      throw error
+    }
 
     log.info('Google sign-in linked to an existing CRM account by verified email', {
       userId: String(byEmail._id),
@@ -265,7 +312,17 @@ export async function resolveGoogleUser({ claims }) {
      * failure for a sign-in that had, in fact, succeeded.
      */
     if (error?.code === 11_000) {
-      const existing = await User.findOne({ googleId: claims.sub })
+      /**
+       * Scoped to live accounts, like every other lookup here.
+       *
+       * The duplicate is only the race this block describes when a *live*
+       * account now holds the identity. If nothing live matches, the index
+       * entry belongs to a soft-deleted account instead — a different
+       * situation, and one this recovery must not swallow. Falling through
+       * rethrows, and the caller reports a failed sign-in rather than
+       * returning somebody else's account.
+       */
+      const existing = await User.findOne({ googleId: claims.sub, ...LIVE })
       if (existing) {
         assertCanSignIn(existing)
         return { user: existing, isNew: false, linkedExisting: false }

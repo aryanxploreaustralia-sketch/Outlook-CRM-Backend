@@ -48,6 +48,17 @@ export const GOOGLE_AUTH_ERROR = Object.freeze({
   ACCOUNT_INACTIVE: 'account_inactive',
   /** The matching CRM account is soft-deleted. */
   ACCOUNT_DELETED: 'account_deleted',
+
+  /**
+   * A removed account still holds this Google identity.
+   *
+   * Distinct from `ACCOUNT_DELETED`, which means *you* are the deleted account.
+   * This one means the person signing in has a perfectly good live account —
+   * but the `googleId` they authenticate with is still recorded on a
+   * soft-deleted one, and the unique index covers deleted documents too. The
+   * remedy is an administrator's, not the user's.
+   */
+  IDENTITY_HELD_BY_DELETED: 'google_identity_held_by_deleted',
 })
 
 /**

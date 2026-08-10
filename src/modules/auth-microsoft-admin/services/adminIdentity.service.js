@@ -174,8 +174,21 @@ function assertCanSignIn(user) {
 export async function resolveAdminUser({ claims }) {
   const { email, tenantId, microsoftId } = screenClaims(claims)
 
+  /**
+   * Every lookup below is scoped to live accounts.
+   *
+   * The mirror of the same scope in `googleIdentity.service.js`, for the same
+   * reason: a soft-deleted account keeps its `microsoftId`, `microsoftEmail`
+   * and address — its history is preserved — but must not answer for them, or
+   * a replacement invited onto the same address could never sign in.
+   *
+   * `$ne: true` rather than `false`, so documents predating the field still
+   * count as live.
+   */
+  const LIVE = { isDeleted: { $ne: true } }
+
   // --- 1. A Microsoft identity this CRM has already linked -----------------
-  const byMicrosoftId = await User.findOne({ tenantId, microsoftId })
+  const byMicrosoftId = await User.findOne({ tenantId, microsoftId, ...LIVE })
 
   if (byMicrosoftId) {
     assertCanSignIn(byMicrosoftId)
@@ -232,7 +245,7 @@ export async function resolveAdminUser({ claims }) {
   // The directory path, and the one that makes differing Google and Microsoft
   // addresses work. `microsoftEmail` is set by an owner through the invitation
   // or the link endpoint — never inferred.
-  const byLinkedAddress = await User.findOne({ microsoftEmail: email })
+  const byLinkedAddress = await User.findOne({ microsoftEmail: email, ...LIVE })
 
   if (byLinkedAddress) {
     return { user: await attach(byLinkedAddress, { via: 'linked_address' }), linkedExisting: true }
@@ -243,7 +256,7 @@ export async function resolveAdminUser({ claims }) {
   // Retained from Phase 14.8B for an account established through Microsoft, or
   // one whose owner happens to use the same address with both providers. Not
   // the main path, and no longer required to be.
-  const byEmail = await User.findOne({ email })
+  const byEmail = await User.findOne({ email, ...LIVE })
 
   if (byEmail) {
     return { user: await attach(byEmail, { via: 'primary_address' }), linkedExisting: true }

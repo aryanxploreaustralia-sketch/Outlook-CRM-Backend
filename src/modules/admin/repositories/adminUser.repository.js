@@ -195,17 +195,38 @@ export function findUserById(id) {
 }
 
 /**
- * An existing account for an address, whatever its state.
+ * A **live** account for an address.
  *
- * Used by the invite flow, so it deliberately looks past the soft-delete filter
- * the directory applies: inviting an address that belongs to a removed account
- * needs a different answer from inviting an unknown one.
+ * Used by the invite flow to answer one question: would inviting this address
+ * create a second account for somebody who already has one?
+ *
+ * Only a account that has not been deleted can. A soft-deleted user keeps their
+ * document and all their history — that is the point of the soft delete — but
+ * they no longer hold their address against a new invitation. Deleting somebody
+ * and then hiring a replacement onto the same shared mailbox address is a
+ * normal thing to do, and it was previously refused with "already has a CRM
+ * account" and no way forward short of restoring the account you had just
+ * removed.
+ *
+ * This deliberately reversed an earlier decision to look *past* the soft-delete
+ * filter here. That reading answered "has this address ever been used", which
+ * turns out not to be the question the invite flow is asking.
+ *
+ * Duplicate protection for live accounts is unchanged and unweakened: an active,
+ * invited or suspended user still matches and still produces the 409.
  *
  * The address is lowercased because the schema stores it that way; matching on
  * the stored form keeps this an indexed equality rather than a regex scan.
  */
 export function findUserByEmail(email) {
-  return User.findOne({ email: String(email).trim().toLowerCase() }).select(USER_FIELDS).lean()
+  return User.findOne({
+    email: String(email).trim().toLowerCase(),
+    // `$ne: true` rather than `false`, so documents written before the field
+    // existed — which have no `isDeleted` at all — still count as live.
+    isDeleted: { $ne: true },
+  })
+    .select(USER_FIELDS)
+    .lean()
 }
 
 /**

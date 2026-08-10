@@ -1,0 +1,252 @@
+/**
+ * Assigning a starting book of enquiries to a user.
+ *
+ * An administrator hiring somebody uploads the workbook of enquiries that
+ * person is taking over, and those enquiries become theirs.
+ *
+ * ## This file imports nothing of its own
+ *
+ * Every rule that decides what a row means already exists and is in production:
+ * `fromXlsx` reads the workbook, `classifyWorkbook` decides which sheets are
+ * lead registers and how their columns map, and `importSheet` validates,
+ * de-duplicates and writes. Query Date parsing, the four-stage `Status`
+ * mapping, Remarks, phones, pax and company resolution all live there and are
+ * called, not reimplemented.
+ *
+ * What is genuinely new is one line of intent: `owner` is the **new user's**
+ * id rather than the caller's. Everything else is orchestration.
+ *
+ * ## Why `owner` is the assignment
+ *
+ * `Lead.owner` is the only ownership field on the model, and every read path in
+ * the application scopes by it — `ownerOf(req)` is `req.auth.user._id`. A lead
+ * is therefore visible to exactly one user: its owner. Setting `owner` to the
+ * new account is not merely how they are assigned, it is the only thing that
+ * makes them visible to that person at all.
+ *
+ * A consequence worth stating plainly: these enquiries move *into* the new
+ * user's register and are not visible in the administrator's own. That is the
+ * existing data model, not a decision taken here.
+ *
+ * ## Why every lead sheet is imported
+ *
+ * The ordinary importer asks the user to choose a sheet, because they are
+ * standing in a wizard. This runs during account creation, where there is no
+ * wizard and no sensible moment to ask. So the same classifier the wizard uses
+ * picks the sheets for it: those it identifies as lead registers are imported
+ * and the rest — hotel operations tabs, empty tabs — are reported as skipped
+ * rather than guessed at.
+ */
+
+import { ImportJob } from '../../../models/importJob.model.js'
+import { User } from '../../../models/user.model.js'
+import { ApiError } from '../../../utils/ApiError.js'
+import { createContextLogger } from '../../../utils/logger.js'
+import { fromXlsx, listSheets } from '../../contacts/utils/xlsx.js'
+import { IMPORT_STATUS, IMPORT_STEP } from '../../import/constants/importConstants.js'
+import { SHEET_KIND } from '../../leads/constants/leadConstants.js'
+import { importSheet } from '../../leads/services/leadImport.service.js'
+import { classifyWorkbook } from '../../leads/services/worksheetClassifier.service.js'
+
+const log = createContextLogger('admin-user-leads')
+
+/**
+ * Resolves the account the enquiries are for.
+ *
+ * The id arrives in the URL from a browser, so it is re-read from the database
+ * rather than trusted: a caller holding `users.invite` must not be able to move
+ * enquiries onto an account that does not exist, or onto one that has been
+ * deleted and would hide them from everybody.
+ *
+ * @param {string} userId
+ * @returns {Promise<import('mongoose').Document>}
+ */
+async function resolveTargetUser(userId) {
+  const user = await User.findById(userId)
+
+  if (!user || user.isDeleted) {
+    throw ApiError.notFound('That user does not exist.', { code: 'USER_NOT_FOUND' })
+  }
+
+  return user
+}
+
+/**
+ * Imports a workbook and assigns every enquiry in it to one user.
+ *
+ * @param {{
+ *   userId: string,
+ *   buffer: Buffer,
+ *   filename: string,
+ *   actor: object,
+ * }} params
+ * @returns {Promise<{
+ *   user: { id: string, email: string, fullName: ?string },
+ *   created: number, updated: number, invalid: number, duplicate: number,
+ *   failed: number, total: number,
+ *   sheets: Array<{ name: string, kind: string, imported: boolean, reason: ?string,
+ *                   created: number, updated: number, invalid: number, failed: number }>,
+ *   importJob: ?string,
+ *   issues: Array<object>,
+ * }>}
+ */
+export async function assignWorkbookToUser({ userId, buffer, filename, actor }) {
+  const user = await resolveTargetUser(userId)
+
+  // Read the workbook once and classify every tab, exactly as the import wizard
+  // does on its first step.
+  let names
+  try {
+    names = listSheets(buffer).map((sheet) => sheet.name)
+  } catch (error) {
+    throw ApiError.badRequest(
+      'That file could not be read as an .xlsx workbook.',
+      { code: 'WORKBOOK_UNREADABLE', cause: error },
+    )
+  }
+
+  if (names.length === 0) {
+    throw ApiError.badRequest('That workbook contains no worksheets.', { code: 'WORKBOOK_EMPTY' })
+  }
+
+  const parsedSheets = names.map((name) => {
+    const parsed = fromXlsx(buffer, { sheet: name })
+    return { name, parsed, rows: parsed.grid.slice(parsed.headerRowNumber) }
+  })
+
+  const classified = classifyWorkbook(
+    parsedSheets.map(({ name, parsed, rows }) => ({ name, headers: parsed.headers, rows })),
+  )
+
+  const leadSheets = classified.sheets.filter((sheet) => sheet.kind === SHEET_KIND.LEADS)
+
+  if (leadSheets.length === 0) {
+    throw ApiError.badRequest(
+      `No worksheet in "${filename}" looks like a lead register, so nothing was imported. ` +
+        'Check that the file is the sales workbook and that its columns are named as usual.',
+      { code: 'NO_LEAD_SHEETS' },
+    )
+  }
+
+  /**
+   * One job row for the whole upload.
+   *
+   * `owner` is the new user, matching the enquiries the job produced, so the
+   * import appears in *their* workbook history rather than the administrator's.
+   * `createdBy` records who actually performed it.
+   */
+  const job = await ImportJob.create({
+    owner: user._id,
+    createdBy: actor._id,
+    filename,
+    fileSize: buffer.length,
+    format: 'xlsx',
+    status: IMPORT_STATUS.RUNNING,
+    step: IMPORT_STEP.IMPORT,
+    headers: parsedSheets[0]?.parsed?.headers ?? [],
+    startedAt: new Date(),
+  })
+
+  const totals = { total: 0, created: 0, updated: 0, invalid: 0, duplicate: 0, failed: 0 }
+  const perSheet = []
+  const issues = []
+
+  try {
+    for (const sheet of classified.sheets) {
+      const source = parsedSheets.find((entry) => entry.name === sheet.name)
+
+      if (sheet.kind !== SHEET_KIND.LEADS) {
+        perSheet.push({
+          name: sheet.name,
+          kind: sheet.kind,
+          imported: false,
+          reason: sheet.reason ?? 'Not a lead register.',
+          created: 0,
+          updated: 0,
+          invalid: 0,
+          failed: 0,
+        })
+        continue
+      }
+
+      // The same call the ordinary importer makes. `owner` is the only
+      // difference, and it is the whole feature.
+      const result = await importSheet({
+        rows: source.rows,
+        mapping: sheet.mapping,
+        sheetName: sheet.name,
+        headerRowNumber: source.parsed.headerRowNumber,
+        owner: user._id,
+        createdBy: actor._id,
+        importJob: job._id,
+      })
+
+      for (const key of Object.keys(totals)) totals[key] += result[key] ?? 0
+      issues.push(...(result.issues ?? []).slice(0, 100))
+
+      perSheet.push({
+        name: sheet.name,
+        kind: sheet.kind,
+        imported: true,
+        reason: null,
+        created: result.created,
+        updated: result.updated,
+        invalid: result.invalid,
+        failed: result.failed,
+      })
+    }
+
+    job.status =
+      totals.failed > 0 || totals.invalid > 0 ? IMPORT_STATUS.PARTIAL : IMPORT_STATUS.COMPLETED
+    job.cursor = totals.total
+    job.progress = {
+      imported: totals.created,
+      updated: totals.updated,
+      skipped: totals.duplicate,
+      failed: totals.failed + totals.invalid,
+    }
+    job.finishedAt = new Date()
+    await job.save()
+  } catch (error) {
+    // The job is marked failed and the error re-thrown. Leaving it RUNNING
+    // would show a permanently in-flight import in the new user's history.
+    job.status = IMPORT_STATUS.FAILED
+    // `lastError`, matching how `workbookQueue.service` records a failure.
+    job.lastError = {
+      message: error.message?.slice(0, 512) ?? 'The import failed.',
+      occurredAt: new Date(),
+    }
+    job.finishedAt = new Date()
+    await job.save().catch(() => {})
+
+    log.error('Assigning a workbook to a new user failed', {
+      userId: String(user._id),
+      filename,
+      error: error.message,
+    })
+
+    throw error
+  }
+
+  log.info('Workbook assigned to user', {
+    userId: String(user._id),
+    filename,
+    created: totals.created,
+    updated: totals.updated,
+  })
+
+  return {
+    user: {
+      id: String(user._id),
+      email: user.email,
+      // `displayName` is the User model's name field; there is no `fullName`.
+      displayName: user.displayName ?? null,
+    },
+    ...totals,
+    sheets: perSheet,
+    importJob: String(job._id),
+    issues: issues.slice(0, 200),
+  }
+}
+
+export default { assignWorkbookToUser }

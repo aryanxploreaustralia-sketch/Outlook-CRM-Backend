@@ -33,8 +33,10 @@
  * endpoint that changes a role — both absent rather than disabled.
  */
 
-import { Router } from 'express'
+import express, { Router } from 'express'
 import rateLimit from 'express-rate-limit'
+
+import { MAX_FILE_BYTES } from '../../import/constants/importConstants.js'
 
 import { requireAuth } from '../../../middlewares/authenticate.js'
 import { requireAllPermissions, requirePermission } from '../../../middlewares/authorise.js'
@@ -113,6 +115,31 @@ router.post(
   requirePermission(PERMISSIONS.USERS_INVITE),
   inviteLimiter,
   controller.postAdminUserInvite,
+)
+
+/**
+ * Assigning a starting book of enquiries to a user.
+ *
+ * Registered before `/users/:id` for the same reason `/users/invite` is: a
+ * literal segment must not be captured as an id.
+ *
+ * Gated on `users.invite` — the capability that creates the account. Stocking
+ * it is part of the same act of onboarding, and a caller who may bring somebody
+ * into the CRM may decide what they start with. It deliberately does *not*
+ * open a way to move enquiries between existing users; that would be a
+ * different capability and a different endpoint.
+ *
+ * `inviteLimiter` is reused rather than given its own budget: this is the same
+ * onboarding flow, and a second allowance would only let a caller exhaust the
+ * first through the other door. `express.raw` matches the workbook importer's
+ * ceiling, so the two agree on what "too large" means.
+ */
+router.post(
+  '/users/:id/leads/import',
+  requirePermission(PERMISSIONS.USERS_INVITE),
+  inviteLimiter,
+  express.raw({ type: () => true, limit: MAX_FILE_BYTES }),
+  controller.postAdminUserLeadImport,
 )
 
 router.get('/users/:id', requirePermission(PERMISSIONS.USERS_VIEW), controller.getAdminUser)

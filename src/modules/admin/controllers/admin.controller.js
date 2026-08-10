@@ -11,6 +11,7 @@
  * and no role update — not disabled, not commented out, simply absent.
  */
 
+import { ApiError } from '../../../utils/ApiError.js'
 import { asyncHandler } from '../../../utils/asyncHandler.js'
 import { sendSuccess } from '../../../utils/ApiResponse.js'
 import { HTTP_STATUS } from '../../../constants/httpStatus.js'
@@ -62,6 +63,7 @@ import {
   listUsers,
   suspendUser,
 } from '../services/adminUserAdmin.service.js'
+import { assignWorkbookToUser } from '../services/adminUserLeads.service.js'
 import {
   adminAnalyticsQuerySchema,
   adminCampaignQuerySchema,
@@ -193,6 +195,67 @@ export const getAdminUser = asyncHandler(async (req, res) =>
  * would otherwise depend on a connected mailbox to create an account for
  * somebody who may be the one who is meant to connect it.
  */
+/**
+ * POST /api/v1/admin/users/:id/leads/import
+ *
+ * Assigns a workbook of enquiries to one user, typically the account just
+ * created for them.
+ *
+ * Separate from `/users/invite` on purpose. Creating the account and stocking
+ * it are two operations with two outcomes, and a single endpoint would have to
+ * report "created but not imported" as one ambiguous result — or worse, fail
+ * the whole call and leave the administrator unsure whether the user exists.
+ * Two calls let the client say exactly what happened.
+ *
+ * The body is the raw file, with the name in `X-Filename`: the same convention
+ * the workbook import, profile documents and task attachments already use.
+ */
+export const postAdminUserLeadImport = asyncHandler(async (req, res) => {
+  const id = objectIdSchema.parse(req.params.id)
+
+  const buffer = Buffer.isBuffer(req.body) ? req.body : null
+  if (!buffer || buffer.length === 0) throw ApiError.badRequest('No file was uploaded.')
+
+  const filename = String(req.get('x-filename') ?? 'workbook.xlsx').slice(0, 255)
+
+  const result = await assignWorkbookToUser({
+    userId: id,
+    buffer,
+    filename,
+    actor: req.auth.user,
+  })
+
+  await recordAudit({
+    req,
+    event: 'WORKBOOK_IMPORTED',
+    summary: `Assigned ${filename} to ${result.user.email} — ${result.created} enquiry/enquiries`,
+    target: { id: result.importJob, name: filename },
+    performedFor: { _id: result.user.id, email: result.user.email },
+    affectedCount: result.created + result.updated,
+    metadata: {
+      assignedTo: result.user.id,
+      filename,
+      created: result.created,
+      updated: result.updated,
+      duplicate: result.duplicate,
+      invalid: result.invalid,
+      failed: result.failed,
+      sheets: result.sheets.filter((sheet) => sheet.imported).map((sheet) => sheet.name),
+    },
+  })
+
+  return sendSuccess(res, {
+    statusCode: HTTP_STATUS.CREATED,
+    message:
+      `${result.created} enquiry/enquiries assigned to ${result.user.email}` +
+      (result.updated > 0 ? `, ${result.updated} updated` : '') +
+      (result.invalid + result.failed > 0
+        ? `. ${result.invalid + result.failed} row(s) could not be imported.`
+        : '.'),
+    data: result,
+  })
+})
+
 export const postAdminUserInvite = asyncHandler(async (req, res) => {
   const input = adminUserInviteSchema.parse(req.body)
   const result = await inviteUser(input, req.auth.user)
@@ -817,4 +880,5 @@ export default {
   patchAdminUserActivate,
   patchAdminUserSuspend,
   postAdminUserInvite,
+  postAdminUserLeadImport,
 }

@@ -159,8 +159,8 @@ const leadSchema = new Schema(
       type: String,
       enum: LEAD_STAGE_VALUES,
       // An enquiry the office has not closed is, by definition, active. There
-      // is no "untouched" stage to fall back to any more, and inventing one
-      // would put a fifth word in a four-word vocabulary.
+      // is no "untouched" stage to fall back to, and inventing one would add a
+      // word the sales workbook does not use.
       default: LEAD_STAGE.ACTIVE,
       index: true,
     },

@@ -19,8 +19,8 @@
 /**
  * Stages of a travel enquiry.
  *
- * These are the four values the sales workbook has always recorded in its
- * `Status` column, and they are now the CRM's whole vocabulary. The register is
+ * These are the values the sales workbook records in its `Status` column, and
+ * they are the CRM's whole vocabulary. The register is
  * a record of enquiries the office already tracks this way; a longer pipeline
  * invented stages nobody maintained, and forced every imported historical
  * enquiry through a translation that lost the office's own word for it.
@@ -43,6 +43,19 @@ export const LEAD_STAGE = Object.freeze({
   CONFIRMED: 'confirmed',
   INACTIVE: 'inactive',
   CLOSED: 'closed',
+
+  /**
+   * The agency or contact is no longer trading.
+   *
+   * Added alongside the original four rather than replacing any of them. It
+   * describes the *counterparty*, not the progress of the enquiry, which is why
+   * it is not a synonym for `closed`: a closed enquiry reached an outcome, this
+   * one cannot reach any.
+   *
+   * `not_operating` follows the snake_case the stored vocabulary has always
+   * used for multi-word values. The workbook writes it as "Not operating".
+   */
+  NOT_OPERATING: 'not_operating',
 })
 
 export const LEAD_STAGE_VALUES = Object.freeze(Object.values(LEAD_STAGE))
@@ -52,10 +65,11 @@ export const LEAD_STAGE_LABELS = Object.freeze({
   confirmed: 'Confirmed',
   inactive: 'Inactive',
   closed: 'Closed',
+  not_operating: 'Not operating',
 })
 
 /**
- * Every stage this application has ever stored, mapped onto the four above.
+ * Every stage this application has ever stored, mapped onto the current ones.
  *
  * Two jobs. It lets `normaliseStage` read a document written before the
  * vocabulary changed without that lead disappearing from a filter or crashing a
@@ -81,7 +95,7 @@ export const LEGACY_STAGE_ALIASES = Object.freeze({
 })
 
 /**
- * Resolves any stored or supplied stage to one of the four.
+ * Resolves any stored or supplied stage to a current one.
  *
  * Returns `null` for a value that is neither current nor legacy, so a caller
  * can tell "unrecognised" from "defaulted" and refuse rather than silently
@@ -109,6 +123,7 @@ export const LEAD_STAGE_ORDER = Object.freeze([
   LEAD_STAGE.INACTIVE,
   LEAD_STAGE.CONFIRMED,
   LEAD_STAGE.CLOSED,
+  LEAD_STAGE.NOT_OPERATING,
 ])
 
 /**
@@ -125,6 +140,13 @@ export const LEAD_STAGE_ORDER = Object.freeze([
  * enquiry is precisely the audience a re-engagement campaign exists for. The
  * eligible/blocked split therefore means exactly what it meant before the
  * vocabulary changed — no lead became mailable, and none stopped being so.
+ *
+ * `not_operating` is deliberately absent, and therefore blocked.
+ * `CAMPAIGN_BLOCKED_STAGES` below is derived as "everything not listed here",
+ * so a stage added to the vocabulary is un-mailable until somebody decides
+ * otherwise. That default is the right way round, and for this stage it is also
+ * the right answer: an agency that has stopped trading is the one audience a
+ * re-engagement campaign must not reach.
  */
 export const CAMPAIGN_ELIGIBLE_STAGES = Object.freeze([
   LEAD_STAGE.ACTIVE,
@@ -136,7 +158,22 @@ export const CAMPAIGN_BLOCKED_STAGES = Object.freeze(
   LEAD_STAGE_VALUES.filter((stage) => !CAMPAIGN_ELIGIBLE_STAGES.includes(stage)),
 )
 
-/** Stages meaning the enquiry is finished, one way or another. */
+/**
+ * Stages meaning the enquiry is finished, one way or another.
+ *
+ * `not_operating` is **not** listed, and that is a decision rather than an
+ * oversight. This set feeds the conversion-rate denominator in
+ * `leadStatistics`, so adding a stage to it silently revises every historical
+ * figure the business has been reading. Whether an enquiry lost because the
+ * agency shut down should count against the conversion rate is a commercial
+ * question, not a technical one, so the existing calculation is left exactly as
+ * it was and the question is left open.
+ *
+ * The practical effect of the omission is small and safe: a reply arriving on a
+ * `not_operating` enquiry does not reopen it either, because
+ * `REPLY_STAGE_TRANSITIONS` has no entry for the stage and falls through to no
+ * transition.
+ */
 export const TERMINAL_STAGES = Object.freeze([LEAD_STAGE.CLOSED])
 
 /**
@@ -159,7 +196,7 @@ export const WON_STAGES = Object.freeze([LEAD_STAGE.CONFIRMED])
 /**
  * How the workbook's `Status` column maps onto a stage.
  *
- * The first four entries are the whole point of the vocabulary: the sheet's
+ * The first entries are the whole point of the vocabulary: the sheet's
  * words *are* the CRM's stages, so an imported historical enquiry keeps the
  * office's own description of it and nothing is translated or inferred.
  *
@@ -174,6 +211,19 @@ export const SHEET_STATUS_TO_STAGE = Object.freeze({
   inactive: LEAD_STAGE.INACTIVE,
   confirmed: LEAD_STAGE.CONFIRMED,
   closed: LEAD_STAGE.CLOSED,
+
+  /**
+   * "Not operating", as the sheet writes it.
+   *
+   * `parseStage` lower-cases and trims before looking a value up, so this one
+   * key already covers "Not Operating", "NOT OPERATING" and stray surrounding
+   * whitespace — the same tolerance every other entry here relies on. It does
+   * not strip punctuation, so the underscored form is listed separately: that
+   * is the value this application itself writes on an export, and a workbook
+   * exported from the CRM has to import back into it.
+   */
+  'not operating': LEAD_STAGE.NOT_OPERATING,
+  not_operating: LEAD_STAGE.NOT_OPERATING,
 
   // Superseded stages, so an older export still imports.
   ...LEGACY_STAGE_ALIASES,

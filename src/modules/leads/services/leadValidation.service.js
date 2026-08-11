@@ -13,6 +13,8 @@
 import {
   LEAD_FIELD,
   LEAD_STAGE,
+  LEAD_STAGE_LABELS,
+  LEAD_STAGE_ORDER,
   MARKET,
   SHEET_STATUS_TO_STAGE,
 } from '../constants/leadConstants.js'
@@ -188,7 +190,7 @@ export function parsePax(value) {
 /**
  * Maps the sheet's `Status` word onto a stage.
  *
- * The workbook's four words are the CRM's four stages, so the common case is an
+ * The workbook's words are the CRM's stages, so the common case is an
  * exact match and the value is carried across untranslated.
  *
  * An unrecognised word falls back to `active` and reports `recognised: false`
@@ -312,8 +314,10 @@ export function validateLeadRow({ row, mapping, rowNumber, sheetName = '' }) {
   if (raw[LEAD_FIELD.STAGE] && !recognised) {
     note(
       LEAD_FIELD.STAGE,
-      `Status "${raw[LEAD_FIELD.STAGE]}" is not one of Active, Closed, Confirmed or ` +
-        'Inactive; filed as Active.',
+      // Built from the vocabulary rather than written out, so adding a stage
+      // cannot leave this message naming a set the importer no longer uses.
+      `Status "${raw[LEAD_FIELD.STAGE]}" is not one of ` +
+        `${LEAD_STAGE_ORDER.map((stage) => LEAD_STAGE_LABELS[stage]).join(', ')}; filed as Active.`,
     )
   }
 

@@ -56,6 +56,9 @@ export const LEAD_STAGE = Object.freeze({
    * used for multi-word values. The workbook writes it as "Not operating".
    */
   NOT_OPERATING: 'not_operating',
+
+  /** An enquiry received but not yet worked. The sheet writes it as "QUERY". */
+  QUERY: 'query',
 })
 
 export const LEAD_STAGE_VALUES = Object.freeze(Object.values(LEAD_STAGE))
@@ -66,6 +69,7 @@ export const LEAD_STAGE_LABELS = Object.freeze({
   inactive: 'Inactive',
   closed: 'Closed',
   not_operating: 'Not operating',
+  query: 'Query',
 })
 
 /**
@@ -124,6 +128,7 @@ export const LEAD_STAGE_ORDER = Object.freeze([
   LEAD_STAGE.CONFIRMED,
   LEAD_STAGE.CLOSED,
   LEAD_STAGE.NOT_OPERATING,
+  LEAD_STAGE.QUERY,
 ])
 
 /**
@@ -224,6 +229,7 @@ export const SHEET_STATUS_TO_STAGE = Object.freeze({
    */
   'not operating': LEAD_STAGE.NOT_OPERATING,
   not_operating: LEAD_STAGE.NOT_OPERATING,
+  query: LEAD_STAGE.QUERY,
 
   // Superseded stages, so an older export still imports.
   ...LEGACY_STAGE_ALIASES,

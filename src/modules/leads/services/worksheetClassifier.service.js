@@ -92,7 +92,21 @@ function columnValues(rows, index, limit = SAMPLE_SIZE) {
  * @returns {{ mapping: object[], corrections: object[], confidence: number }}
  */
 export function mapLeadColumns(headers, rows = []) {
-  const mapping = headers.map((header, index) => {
+  /**
+   * Densified first, because a header row can legitimately have gaps.
+   *
+   * `fromXlsx` assigns cells by column index, so a sheet whose header row
+   * starts at column C — or skips a column mid-row — yields a *sparse* array
+   * with holes rather than empty strings. `Array.prototype.map` preserves those
+   * holes, and `find` below then visits them as `undefined`, which threw
+   * `Cannot read properties of undefined (reading 'field')` and failed the
+   * whole inspection with a 500.
+   *
+   * Spreading fills each hole with `undefined`, which `normaliseHeader` already
+   * reduces to `''` — the same treatment a blank header has always had. Nothing
+   * changes for a dense row.
+   */
+  const mapping = [...headers].map((header, index) => {
     const key = normaliseHeader(header)
     const field = LEAD_HEADER_SYNONYMS[key] ?? LEAD_FIELD.IGNORE
 

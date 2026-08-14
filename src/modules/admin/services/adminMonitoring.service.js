@@ -149,7 +149,7 @@ export async function listAdminCampaigns(query = {}) {
  * nobody mistakes it for a conversation timestamp.
  */
 export async function listAdminLeads(query = {}) {
-  const { stage, search, attention } = query
+  const { stage, search, attention, page = 1, limit = 50 } = query
 
   const filter = { isDeleted: false }
   if (stage) filter.stage = stage
@@ -169,11 +169,32 @@ export async function listAdminLeads(query = {}) {
     ]
   }
 
-  const leads = await Lead.find(filter)
-    .select('reference contactPerson companyName email stage market owner createdAt updatedAt autoMail.status')
-    .sort({ createdAt: -1 })
-    .limit(200)
-    .lean()
+  const staleFilter = {
+    ...filter,
+    updatedAt: { $lt: new Date(Date.now() - STALE_LEAD_DAYS * 86_400_000) },
+  }
+
+  /**
+   * One page, plus counts taken across the whole filtered set.
+   *
+   * The summary is deliberately **not** derived from `leads` any more. It used
+   * to be, and with a fixed 200-row ceiling that made "total" mean "how many
+   * came back", which is not a number anybody wants: an admin looking at a
+   * register of 1,671 was told it held 200. The counts now describe everything
+   * the filter matches, and the rows are just the page being read.
+   */
+  const [leads, total, unassigned, stale, won] = await Promise.all([
+    Lead.find(filter)
+      .select('reference contactPerson companyName email stage market owner createdAt updatedAt autoMail.status')
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean(),
+    Lead.countDocuments(filter),
+    Lead.countDocuments({ ...filter, owner: null }),
+    Lead.countDocuments(staleFilter),
+    Lead.countDocuments({ ...filter, stage: { $in: WON_STAGES } }),
+  ])
 
   const owners = await nameMap(leads.map((lead) => lead.owner))
   const staleCutoff = Date.now() - STALE_LEAD_DAYS * 86_400_000
@@ -203,12 +224,15 @@ export async function listAdminLeads(query = {}) {
 
   return {
     items,
-    summary: {
-      total: items.length,
-      unassigned: items.filter((item) => item.assignedTo === null).length,
-      stale: items.filter((item) => item.isStale).length,
-      // Shared constant, not hardcoded stages — see WON_STAGES.
-      won: items.filter((item) => WON_STAGES.includes(item.stage)).length,
+    // Across everything the filter matches, not just this page.
+    summary: { total, unassigned, stale, won },
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / limit)),
+      hasNext: page * limit < total,
+      hasPrevious: page > 1,
     },
     meta: {
       staleAfterDays: STALE_LEAD_DAYS,

@@ -486,6 +486,19 @@ router.get(
   controller.getAdminLeads,
 )
 
+/**
+ * One enquiry, for the console.
+ *
+ * The same pair of capabilities the list above requires — reading one row and
+ * reading the page it came from are the same act. A manager holding neither is
+ * refused here exactly as they are there.
+ */
+router.get(
+  '/leads/:id',
+  requireAllPermissions([PERMISSIONS.LEADS_VIEW, PERMISSIONS.ANALYTICS_VIEW]),
+  controller.getAdminLeadDetail,
+)
+
 // --- Platform --------------------------------------------------------------
 // `system-health`, deliberately not `health`: `/api/v1/health` is the public,
 // shallow, unauthenticated probe a load balancer polls, and two endpoints whose

@@ -23,8 +23,11 @@
  * module's existing `control` service rather than a second implementation of it.
  */
 
+import { ApiError } from '../../../utils/ApiError.js'
 import { Campaign } from '../../../models/campaign.model.js'
 import { Lead } from '../../../models/lead.model.js'
+import { Company } from '../../../models/company.model.js'
+import { Contact } from '../../../models/contact.model.js'
 import { Mailbox } from '../../../models/mailbox.model.js'
 import { User } from '../../../models/user.model.js'
 import { CAMPAIGN_STATUS_LABELS } from '../../campaigns/constants/campaignConstants.js'
@@ -246,3 +249,45 @@ export async function listAdminLeads(query = {}) {
 }
 
 export default { listAdminCampaigns, listAdminLeads }
+
+/**
+ * One enquiry in full, for an administrator, whoever owns it.
+ *
+ * The CRM's own `GET /v1/leads/:id` loads through `ownerOf(req)` and is
+ * unchanged — a salesperson still cannot open somebody else's enquiry. This is
+ * the administrator's path to the same document, and the difference is the
+ * whole point: the console exists to look across users.
+ *
+ * The serialization is not reimplemented. `toPublicJSON()` is the same method
+ * the CRM detail page renders from, so the two screens cannot disagree about a
+ * stage, a Query Date or a remark, and the owner is resolved to a name through
+ * the same helper the list uses.
+ *
+ * @param {string} leadId
+ * @returns {Promise<object>}
+ */
+export async function getAdminLeadDetail(leadId) {
+  const lead = await Lead.findOne({ _id: leadId, isDeleted: false })
+
+  // 404 rather than an empty page: a deleted or unknown id is a missing
+  // resource, and the caller's permission was never in doubt.
+  if (!lead) {
+    throw ApiError.notFound('That enquiry does not exist.', { code: 'LEAD_NOT_FOUND' })
+  }
+
+  const [company, contact, owners] = await Promise.all([
+    lead.company ? Company.findById(lead.company) : null,
+    lead.contact ? Contact.findById(lead.contact) : null,
+    nameMap([lead.owner]),
+  ])
+
+  return {
+    lead: lead.toPublicJSON(),
+    company: company?.toPublicJSON() ?? null,
+    contact: contact?.toPublicJSON() ?? null,
+    owner: {
+      id: lead.owner ? String(lead.owner) : null,
+      name: owners.get(String(lead.owner)) ?? null,
+    },
+  }
+}

@@ -48,7 +48,11 @@ import {
   setUserMailboxes,
   unassignUsersFromMailbox,
 } from '../services/mailboxAssignment.service.js'
-import { listAdminCampaigns, listAdminLeads } from '../services/adminMonitoring.service.js'
+import {
+  getAdminLeadDetail as loadAdminLeadDetail,
+  listAdminCampaigns,
+  listAdminLeads,
+} from '../services/adminMonitoring.service.js'
 import { deleteUser, restoreUser } from '../services/adminUserLifecycle.service.js'
 import { recordAudit } from '../../audit/services/auditRecorder.service.js'
 import {
@@ -878,6 +882,21 @@ export const getAdminCampaigns = asyncHandler(async (req, res) => {
 })
 
 /** GET /api/v1/admin/leads — cross-user enquiry monitoring, read-only. */
+/**
+ * GET /api/v1/admin/leads/:id
+ *
+ * One enquiry, whoever owns it. The CRM's owner-scoped detail endpoint is
+ * untouched; this is the console's equivalent, behind the console's guard.
+ */
+export const getAdminLeadDetail = asyncHandler(async (req, res) => {
+  const id = objectIdSchema.parse(req.params.id)
+
+  return sendSuccess(res, {
+    message: 'Enquiry loaded.',
+    data: await loadAdminLeadDetail(id),
+  })
+})
+
 export const getAdminLeads = asyncHandler(async (req, res) => {
   const query = adminLeadQuerySchema.parse(req.query)
 
@@ -933,6 +952,7 @@ export default {
   getAdminCampaigns,
   getAdminDashboard,
   getAdminLeads,
+  getAdminLeadDetail,
   getAdminMailboxes,
   getAdminOrganization,
   getAdminSystemHealth,

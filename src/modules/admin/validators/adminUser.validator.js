@@ -130,6 +130,22 @@ export const adminUserLeadImportSchema = z.object({
   dryRun: z.boolean().optional().default(false),
 })
 
+/**
+ * Body for `DELETE /admin/users/:id/leads`.
+ *
+ * Exactly one of the two forms, never both and never neither: `all` runs the
+ * hard purge and `leadIds` soft-deletes a named set, so a request carrying both
+ * is ambiguous about which the caller meant and is refused rather than guessed.
+ */
+export const adminUserLeadDeleteSchema = z
+  .object({
+    leadIds: z.array(z.string().regex(/^[a-f\d]{24}$/i)).min(1).max(1000).optional(),
+    all: z.literal(true).optional(),
+  })
+  .refine((value) => Boolean(value.all) !== Boolean(value.leadIds?.length), {
+    message: 'Send either "leadIds" or "all": true, but not both.',
+  })
+
 /** A Mongo ObjectId in a path parameter. */
 export const objectIdSchema = z
   .string()

@@ -142,6 +142,22 @@ router.post(
   controller.postAdminUserLeadImport,
 )
 
+/**
+ * Deleting a user's enquiries.
+ *
+ * Gated on `leads.delete` — the same capability the CRM's own single-delete and
+ * delete-all routes use. No new permission: the capability being exercised is
+ * identical, only the register being acted on differs, and that is decided by
+ * the id in the path rather than by who is calling.
+ *
+ * Registered before `/users/:id` so the literal segment cannot be captured.
+ */
+router.delete(
+  '/users/:id/leads',
+  requirePermission(PERMISSIONS.LEADS_DELETE),
+  controller.deleteAdminUserLeads,
+)
+
 router.get('/users/:id', requirePermission(PERMISSIONS.USERS_VIEW), controller.getAdminUser)
 
 router.patch(

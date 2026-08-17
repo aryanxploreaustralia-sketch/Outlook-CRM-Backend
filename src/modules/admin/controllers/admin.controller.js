@@ -63,7 +63,7 @@ import {
   listUsers,
   suspendUser,
 } from '../services/adminUserAdmin.service.js'
-import { assignWorkbookToUser } from '../services/adminUserLeads.service.js'
+import { assignWorkbookToUser, deleteUserLeads } from '../services/adminUserLeads.service.js'
 import {
   adminAnalyticsQuerySchema,
   adminCampaignQuerySchema,
@@ -73,6 +73,7 @@ import {
   adminUserInviteSchema,
   adminUserListQuerySchema,
   adminUserDeleteSchema,
+  adminUserLeadDeleteSchema,
   adminUserLeadImportSchema,
   adminUserRoleSchema,
   microsoftIdentitySchema,
@@ -275,6 +276,50 @@ export const postAdminUserLeadImport = asyncHandler(async (req, res) => {
       (result.invalid + result.failed > 0
         ? `. ${result.invalid + result.failed} row(s) could not be imported.`
         : '.'),
+    data: result,
+  })
+})
+
+/**
+ * DELETE /api/v1/admin/users/:id/leads
+ *
+ * Deletes enquiries belonging to one user. `{ leadIds }` soft-deletes a named
+ * set; `{ all: true }` runs the same hard purge the CRM's own "delete all"
+ * uses. The service scopes every query by the target user's id, so a foreign
+ * lead id matches nothing rather than being deleted.
+ */
+export const deleteAdminUserLeads = asyncHandler(async (req, res) => {
+  const id = objectIdSchema.parse(req.params.id)
+  const body = adminUserLeadDeleteSchema.parse(req.body ?? {})
+
+  const result = await deleteUserLeads({
+    userId: id,
+    leadIds: body.leadIds ?? [],
+    all: body.all === true,
+    actor: req.auth.user,
+  })
+
+  await recordAudit({
+    req,
+    event: 'LEAD_DELETED',
+    summary:
+      `Deleted ${result.deleted} enquiry/enquiries for ${result.user.email}` +
+      (result.mode === 'purge' ? ' (purged the whole register)' : ''),
+    target: { id: result.user.id, name: result.user.email },
+    performedFor: { _id: result.user.id, email: result.user.email },
+    affectedCount: result.deleted,
+    metadata: {
+      mode: result.mode,
+      requested: result.requested,
+      skipped: result.skipped.length,
+    },
+  })
+
+  return sendSuccess(res, {
+    message:
+      result.deleted === 0
+        ? 'No enquiries were deleted.'
+        : `${result.deleted} enquiry/enquiries deleted.`,
     data: result,
   })
 })
@@ -904,4 +949,5 @@ export default {
   patchAdminUserSuspend,
   postAdminUserInvite,
   postAdminUserLeadImport,
+  deleteAdminUserLeads,
 }

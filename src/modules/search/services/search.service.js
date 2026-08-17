@@ -38,6 +38,7 @@ import { CampaignTemplate } from '../../../models/campaignTemplate.model.js'
 import { Notification } from '../../../models/notification.model.js'
 import { OrganizationBootstrap } from '../../../models/organizationBootstrap.model.js'
 import { PERMISSIONS } from '../../../constants/permissions.js'
+import { LEAD_STAGE_LABELS } from '../../leads/constants/leadConstants.js'
 import { scopedMailboxFilter } from '../../../constants/mailboxAccess.js'
 import { createContextLogger } from '../../../utils/logger.js'
 
@@ -117,6 +118,81 @@ export const SEARCH_SOURCES = Object.freeze([
         title: row.companyName,
         subtitle: row.primaryEmail ?? null,
         url: `/companies/${row._id}`,
+      }))
+    },
+  },
+  {
+    /**
+     * Every enquiry in the deployment, found by reference.
+     *
+     * Additive: the owner-scoped `leads` source below is untouched and still
+     * answers for everybody. This one is a **second** source that only an
+     * organization administrator can see, because a source the caller lacks the
+     * permission for is never run — the runner applies that, so it cannot be
+     * skipped here.
+     *
+     * ## Why `users.view`
+     *
+     * `roleMatrix` treats it as the marker for "administers the organization",
+     * which is Owner and Admin. A manager holds `leads.view` and would pass a
+     * lead-shaped permission, but must not gain cross-user lead access — so the
+     * gate is the standing to act across accounts, not the capability to read
+     * an enquiry.
+     *
+     * ## Reference only, and why
+     *
+     * An administrator searching globally is looking up a known reference, not
+     * browsing. Matching contact names or companies across every user would
+     * flood the palette with other people's pipeline on a two-letter term.
+     * Anchored so the index on `reference` is usable: this is a prefix scan,
+     * never a full-collection regex.
+     */
+    key: 'adminLeads',
+    label: 'Enquiries (all users)',
+    icon: 'target',
+    permission: PERMISSIONS.USERS_VIEW,
+    async run(term, { limit }) {
+      const trimmed = String(term ?? '').trim()
+      if (!trimmed) return []
+
+      // Anchored, case-insensitive prefix: "xamp14" and "XAMP1408" both work,
+      // and an exact reference is simply the longest prefix of itself.
+      const anchored = new RegExp(
+        `^${trimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+        'i',
+      )
+
+      const rows = await Lead.find({ reference: anchored, isDeleted: { $ne: true } })
+        .select('reference contactPerson companyName stage owner')
+        .sort({ reference: 1 })
+        .limit(limit)
+        .lean()
+
+      if (rows.length === 0) return []
+
+      // One lookup for every owner on the page, not one per row.
+      const ownerIds = [...new Set(rows.map((row) => String(row.owner)).filter(Boolean))]
+      const owners = await User.find({ _id: { $in: ownerIds } })
+        .select('displayName email')
+        .lean()
+      const nameById = new Map(
+        owners.map((user) => [String(user._id), user.displayName ?? user.email ?? 'Unknown user']),
+      )
+
+      return rows.map((row) => ({
+        id: String(row._id),
+        title: row.reference,
+        subtitle: [
+          row.contactPerson,
+          row.companyName,
+          `Owner: ${nameById.get(String(row.owner)) ?? 'unknown'}`,
+          LEAD_STAGE_LABELS[row.stage] ?? row.stage,
+        ]
+          .filter(Boolean)
+          .join(' · '),
+        // The admin-scoped detail route. The CRM's own is owner-scoped and
+        // would refuse another user's enquiry.
+        url: `/admin/leads/${row._id}`,
       }))
     },
   },

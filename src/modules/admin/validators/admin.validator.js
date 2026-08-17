@@ -89,6 +89,8 @@ export const adminLeadQuerySchema = z.object({
   stage: z.enum(LEAD_STAGE_VALUES).optional(),
   /** The two conditions the monitor exists to surface, as one-click filters. */
   attention: z.enum(['unassigned', 'stale']).optional(),
+  /** Restrict to one person's register. Used by the admin user profile. */
+  owner: z.string().regex(/^[a-f\d]{24}$/i).optional(),
   /** Server-side paging. The monitor used to return a fixed newest-200 slice. */
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(200).default(50),

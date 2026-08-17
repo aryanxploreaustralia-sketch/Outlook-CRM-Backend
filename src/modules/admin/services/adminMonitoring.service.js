@@ -149,10 +149,13 @@ export async function listAdminCampaigns(query = {}) {
  * nobody mistakes it for a conversation timestamp.
  */
 export async function listAdminLeads(query = {}) {
-  const { stage, search, attention, page = 1, limit = 50 } = query
+  const { stage, search, attention, owner, page = 1, limit = 50 } = query
 
   const filter = { isDeleted: false }
   if (stage) filter.stage = stage
+  // Scopes the global monitor to one person, for the admin user profile. Absent
+  // means every owner, which is what the monitor page itself asks for.
+  if (owner) filter.owner = owner
 
   if (attention === 'unassigned') filter.owner = null
   if (attention === 'stale') {

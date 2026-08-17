@@ -145,16 +145,31 @@ router.post(
 /**
  * Deleting a user's enquiries.
  *
- * Gated on `leads.delete` — the same capability the CRM's own single-delete and
- * delete-all routes use. No new permission: the capability being exercised is
- * identical, only the register being acted on differs, and that is decided by
- * the id in the path rather than by who is calling.
+ * ## Why `leads.delete` alone is not the guard
+ *
+ * It was, briefly, and that was wrong. **A manager holds `leads.delete`** — the
+ * matrix grants it so they can clear their own register through the CRM's
+ * routes. Guarding this endpoint on that permission alone would have let a
+ * manager purge *any* user's entire book of business, which is a privilege
+ * escalation rather than the capability the permission describes.
+ *
+ * The distinction the CRM already draws is that `leads.delete` says "may delete
+ * enquiries", not "may act on another person's account". The second half is
+ * what `isOrganizationAdministrator` answers, and `roleMatrix.js` derives that
+ * from `USERS_VIEW` — the closest capability to "administers the organization",
+ * documented there as deliberately narrower than `roleHasAdminAccess` (which a
+ * manager passes, because the console does show them reporting).
+ *
+ * So both are required, expressed with the middleware already used by
+ * `/admin/leads`: the capability being exercised, and the standing to exercise
+ * it on somebody else. That is Owner and Admin only — no new permission, no
+ * second role system, no hardcoded identities.
  *
  * Registered before `/users/:id` so the literal segment cannot be captured.
  */
 router.delete(
   '/users/:id/leads',
-  requirePermission(PERMISSIONS.LEADS_DELETE),
+  requireAllPermissions([PERMISSIONS.LEADS_DELETE, PERMISSIONS.USERS_VIEW]),
   controller.deleteAdminUserLeads,
 )
 

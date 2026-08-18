@@ -21,7 +21,12 @@ import {
   PERMISSION_LABELS,
 } from '../../../constants/permissions.js'
 import { ROLE_LABELS } from '../../../constants/roles.js'
-import { buildRoleMatrix, permissionListForRole, roleHasAdminAccess } from '../../../constants/roleMatrix.js'
+import {
+  OWNER_ONLY_PERMISSIONS,
+  buildRoleMatrix,
+  permissionListForRole,
+  roleHasAdminAccess,
+} from '../../../constants/roleMatrix.js'
 import { buildAdminAnalytics } from '../services/adminAnalytics.service.js'
 import { buildAdminAuditSummary } from '../services/adminAudit.service.js'
 import { buildAdminDashboard } from '../services/adminDashboard.service.js'
@@ -152,6 +157,16 @@ export const getAdminRoles = asyncHandler(async (_req, res) =>
       })),
       groups: PERMISSION_GROUPS,
       catalogue: PERMISSION_LABELS,
+      /*
+       * The permissions no role but Owner may hold, sent rather than mirrored.
+       *
+       * Without this the console had no way to know that `users.invite` is
+       * refusable, so it drew a checkbox, accepted the click, and let the server
+       * reject it — which reads exactly like a save that silently failed. The
+       * rule is a server rule and stays one; this is the console being told
+       * enough to stop offering something that cannot work.
+       */
+      ownerOnlyPermissions: OWNER_ONLY_PERMISSIONS,
     },
   }),
 )

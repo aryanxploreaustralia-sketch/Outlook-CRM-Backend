@@ -20,9 +20,13 @@ export const DATE_PRESETS = Object.freeze([
   'today',
   'yesterday',
   'last7',
+  /** Added for the lead monitor: a fortnight, and the two week-boundary ranges. */
+  'last14',
   'last30',
   /** Added in 17.3: a quarter, which the performance filters offer. */
   'last90',
+  'thisWeek',
+  'lastWeek',
   'thisMonth',
   'lastMonth',
   'thisYear',
@@ -71,6 +75,31 @@ export function resolveRange({ preset, from, to }) {
       const start = startOfDay(now)
       start.setUTCDate(start.getUTCDate() - 6)
       return { from: start, to: end, preset }
+    }
+    case 'last14': {
+      const start = startOfDay(now)
+      start.setUTCDate(start.getUTCDate() - 13)
+      return { from: start, to: end, preset }
+    }
+    /*
+     * Weeks start Monday.
+     *
+     * `getUTCDay()` calls Sunday 0, so the offset is shifted by 6 before the
+     * modulo — otherwise Sunday would open a new week rather than close one,
+     * and "this week" on a Sunday would report a single day.
+     */
+    case 'thisWeek': {
+      const start = startOfDay(now)
+      start.setUTCDate(start.getUTCDate() - ((start.getUTCDay() + 6) % 7))
+      return { from: start, to: end, preset }
+    }
+    case 'lastWeek': {
+      const start = startOfDay(now)
+      start.setUTCDate(start.getUTCDate() - ((start.getUTCDay() + 6) % 7) - 7)
+      const finish = new Date(start)
+      finish.setUTCDate(finish.getUTCDate() + 6)
+      finish.setUTCHours(23, 59, 59, 999)
+      return { from: start, to: finish, preset }
     }
     case 'last90': {
       const start = startOfDay(now)

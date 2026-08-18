@@ -31,8 +31,15 @@ import { Contact } from '../../../models/contact.model.js'
 import { Mailbox } from '../../../models/mailbox.model.js'
 import { User } from '../../../models/user.model.js'
 import { CAMPAIGN_STATUS_LABELS } from '../../campaigns/constants/campaignConstants.js'
-import { LEAD_STAGE_LABELS, WON_STAGES } from '../../leads/constants/leadConstants.js'
-import { STALE_LEAD_DAYS } from '../constants/adminConstants.js'
+import {
+  LEAD_STAGE_LABELS,
+  MARKET_LABELS,
+  MARKET_VALUES,
+  WON_STAGES,
+} from '../../leads/constants/leadConstants.js'
+import { AUTO_MAIL_STATUS, AUTO_MAIL_STATUS_VALUES } from '../../leads/constants/syncConstants.js'
+import { ACTIVE_LEAD_DAYS, STALE_LEAD_DAYS } from '../constants/adminConstants.js'
+import { resolveRange } from '../validators/adminAnalytics.validator.js'
 
 /** Escapes a caller-supplied search term before it reaches a regex. */
 function safePattern(term) {
@@ -152,18 +159,95 @@ export async function listAdminCampaigns(query = {}) {
  * nobody mistakes it for a conversation timestamp.
  */
 export async function listAdminLeads(query = {}) {
-  const { stage, search, attention, owner, page = 1, limit = 50 } = query
+  const {
+    stage,
+    market,
+    introduction,
+    activity,
+    search,
+    attention,
+    owner,
+    dateField = 'createdAt',
+    preset,
+    from,
+    to,
+    page = 1,
+    limit = 50,
+  } = query
+
+  const staleCutoffDate = new Date(Date.now() - STALE_LEAD_DAYS * 86_400_000)
+  const activeCutoffDate = new Date(Date.now() - ACTIVE_LEAD_DAYS * 86_400_000)
 
   const filter = { isDeleted: false }
-  if (stage) filter.stage = stage
+
+  /*
+   * Every enum filter arrives as an array and becomes `$in`, including the
+   * one-element case. A single value would read marginally better in a log, but
+   * two code paths for one question is how the single and multiple cases drift
+   * apart.
+   */
+  if (stage?.length) filter.stage = { $in: stage }
+  if (market?.length) filter.market = { $in: market }
+  if (introduction?.length) filter['autoMail.status'] = { $in: introduction }
+
   // Scopes the global monitor to one person, for the admin user profile. Absent
   // means every owner, which is what the monitor page itself asks for.
   if (owner) filter.owner = owner
 
   if (attention === 'unassigned') filter.owner = null
-  if (attention === 'stale') {
-    filter.updatedAt = { $lt: new Date(Date.now() - STALE_LEAD_DAYS * 86_400_000) }
+  if (attention === 'stale') filter.updatedAt = { $lt: staleCutoffDate }
+
+  /*
+   * The date window, on whichever field the caller named.
+   *
+   * Merged into any operator already on that field rather than assigned over
+   * it. `attention=stale` writes `updatedAt.$lt`, so a range on `updatedAt`
+   * would otherwise erase it and quietly return rows the reader had filtered
+   * out — the bounds use different operator keys, so both survive and intersect.
+   */
+  /*
+   * The range is opt-in, which `resolveRange` on its own is not.
+   *
+   * Its `default:` case is `last30`, because every analytics screen wants a
+   * period even when nobody picked one. A register is the opposite: asking for
+   * "the enquiries" and being shown the last thirty days of them, with a total
+   * that agrees, is a silent lie about how many exist. So an absent preset means
+   * no date clause at all — exactly what this endpoint did before the filter
+   * existed, which is what keeps the unfiltered monitor unchanged.
+   */
+  const hasDateFilter = Boolean(preset || from || to)
+  const {
+    from: rangeFrom,
+    to: rangeTo,
+    preset: resolvedPreset,
+  } = hasDateFilter ? resolveRange({ preset, from, to }) : { from: null, to: null, preset: 'all' }
+  if (rangeFrom || rangeTo) {
+    filter[dateField] = {
+      ...(filter[dateField] ?? {}),
+      ...(rangeFrom ? { $gte: rangeFrom } : {}),
+      ...(rangeTo ? { $lte: rangeTo } : {}),
+    }
   }
+
+  /*
+   * Activity, in an `$and` rather than merged onto the filter.
+   *
+   * `awaiting` constrains `autoMail.status`, which the introduction filter may
+   * already constrain, and `recent`/`quiet` constrain `updatedAt`, which the
+   * stale filter and the range may already constrain. An `$and` lets both
+   * conditions stand and intersect; assignment would let whichever ran last win.
+   */
+  const and = []
+  if (activity === 'recent') and.push({ updatedAt: { $gte: activeCutoffDate } })
+  if (activity === 'quiet') and.push({ updatedAt: { $lt: activeCutoffDate } })
+  if (activity === 'replied') and.push({ replyReceived: true })
+  // "We wrote, they have not answered" — which is only meaningful once the
+  // introduction actually went out. Never replied *and* never contacted is not
+  // awaiting anything.
+  if (activity === 'awaiting') {
+    and.push({ replyReceived: false }, { 'autoMail.status': AUTO_MAIL_STATUS.SENT })
+  }
+  if (and.length) filter.$and = and
 
   if (search) {
     const pattern = safePattern(search)
@@ -172,13 +256,21 @@ export async function listAdminLeads(query = {}) {
       { contactPerson: pattern },
       { companyName: pattern },
       { email: pattern },
+      // The workbook carries numbers the reference does not, and a phone number
+      // is often the only thing a caller can quote.
+      { phones: pattern },
     ]
   }
 
-  const staleFilter = {
-    ...filter,
-    updatedAt: { $lt: new Date(Date.now() - STALE_LEAD_DAYS * 86_400_000) },
-  }
+  /*
+   * Stale, within whatever the filter already selects.
+   *
+   * Built by `$and` for the same reason as above: spreading `updatedAt` over the
+   * filter would drop a range the caller set on that field, and this count sits
+   * beside the others in one summary — a tile computed against a different
+   * window than the table below it is worse than no tile.
+   */
+  const staleFilter = { ...filter, $and: [...and, { updatedAt: { $lt: staleCutoffDate } }] }
 
   /**
    * One page, plus counts taken across the whole filtered set.
@@ -202,7 +294,23 @@ export async function listAdminLeads(query = {}) {
     Lead.countDocuments({ ...filter, stage: { $in: WON_STAGES } }),
   ])
 
-  const owners = await nameMap(leads.map((lead) => lead.owner))
+  /*
+   * The owner facet, over the whole register rather than the current filter.
+   *
+   * One `distinct` on an indexed field, resolved through the same `nameMap` the
+   * rows use — so the dropdown and the Owner column can never disagree about
+   * what somebody is called.
+   */
+  const [owners, facetOwnerIds] = await Promise.all([
+    nameMap(leads.map((lead) => lead.owner)),
+    Lead.distinct('owner', { isDeleted: false }),
+  ])
+
+  const facetOwnerNames = await nameMap(facetOwnerIds)
+  const ownerOptions = [...facetOwnerNames.entries()]
+    .map(([value, label]) => ({ value, label }))
+    .sort((a, b) => a.label.localeCompare(b.label))
+
   const staleCutoff = Date.now() - STALE_LEAD_DAYS * 86_400_000
 
   const items = leads.map((lead) => {
@@ -242,8 +350,36 @@ export async function listAdminLeads(query = {}) {
     },
     meta: {
       staleAfterDays: STALE_LEAD_DAYS,
+      activeWithinDays: ACTIVE_LEAD_DAYS,
       activitySource: 'updatedAt',
       note: 'Last activity is the record\'s last modification, not a conversation timestamp.',
+
+      /**
+       * The vocabularies the filter row offers, served rather than mirrored.
+       *
+       * The console could hold its own copy of each list, and for stages it
+       * already does. But `owners` cannot be a constant — it is whoever holds an
+       * enquiry today — and once one facet has to come from the server, sending
+       * the rest with it costs nothing and removes the way a client-side copy
+       * goes stale: an option that no longer exists still being offered, which
+       * looks like a filter that returns nothing rather than a filter that is
+       * wrong.
+       *
+       * `owners` is deliberately computed over the whole register, not the
+       * current filter. A dropdown whose options disappear as you use it cannot
+       * be used to change your mind.
+       */
+      owners: ownerOptions,
+      markets: MARKET_VALUES.map((value) => ({ value, label: MARKET_LABELS[value] ?? value })),
+      introductionStatuses: AUTO_MAIL_STATUS_VALUES.map((value) => ({ value, label: value })),
+
+      /** What the range actually applied to, echoed so the page can say so. */
+      dateField,
+      range: {
+        preset: resolvedPreset,
+        from: rangeFrom ? rangeFrom.toISOString() : null,
+        to: rangeTo ? rangeTo.toISOString() : null,
+      },
     },
   }
 }

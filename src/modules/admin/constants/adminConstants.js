@@ -83,6 +83,17 @@ export const ACTIVE_USER_WINDOW_DAYS = 7
 /** An enquiry with no recorded activity for this long is flagged as stale. */
 export const STALE_LEAD_DAYS = 30
 
+/**
+ * An enquiry touched within this many days counts as recently active.
+ *
+ * Deliberately shorter than `STALE_LEAD_DAYS`, and deliberately not equal to it.
+ * Staleness answers "has this been abandoned", which is a month-scale question;
+ * the monitor's activity filter answers "is this moving", which is a week-scale
+ * one. Sharing a single threshold would make "recently active" mean "not yet
+ * abandoned" — true of almost every row, and so of no use as a filter.
+ */
+export const ACTIVE_LEAD_DAYS = 7
+
 /** Page size ceiling for every admin list endpoint. */
 export const ADMIN_MAX_PAGE_SIZE = 100
 

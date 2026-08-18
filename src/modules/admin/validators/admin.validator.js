@@ -27,7 +27,8 @@ import {
   ANALYTICS_MAX_BUCKETS,
 } from '../constants/adminConstants.js'
 import { CAMPAIGN_STATUS_VALUES } from '../../campaigns/constants/campaignConstants.js'
-import { LEAD_STAGE_VALUES } from '../../leads/constants/leadConstants.js'
+import { LEAD_STAGE_VALUES, MARKET_VALUES } from '../../leads/constants/leadConstants.js'
+import { AUTO_MAIL_STATUS_VALUES } from '../../leads/constants/syncConstants.js'
 import { DATE_PRESETS } from './adminAnalytics.validator.js'
 
 /** Free text that reaches a regex. Bounded so a filter cannot be a novel. */
@@ -84,13 +85,62 @@ export const adminCampaignQuerySchema = z.object({
   status: z.enum(CAMPAIGN_STATUS_VALUES).optional(),
 })
 
+/**
+ * A repeatable enum filter, accepted as one value or a comma-separated list.
+ *
+ * `stage=query` and `stage=query,active` both parse, to an array either way, so
+ * the service has one shape to handle and builds `$in` unconditionally. The
+ * console's dropdowns send a single value today; the wire format is what would
+ * have had to change to allow more than one, and changing it later would mean
+ * versioning the endpoint.
+ *
+ * Unknown members are rejected rather than dropped. Silently ignoring a typo
+ * would widen the result set — the reader would see rows their filter excluded
+ * and have no way to tell why.
+ */
+const enumList = (values) =>
+  z
+    .string()
+    .transform((raw) => raw.split(',').map((part) => part.trim()).filter(Boolean))
+    .pipe(z.array(z.enum(values)).min(1))
+    .optional()
+
+/** `YYYY-MM-DD`, matching the `<input type="date">` the console sends. */
+const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
+
 export const adminLeadQuerySchema = z.object({
   search: searchTerm,
-  stage: z.enum(LEAD_STAGE_VALUES).optional(),
+  stage: enumList(LEAD_STAGE_VALUES),
+  /** Destination market, from the workbook's own AU/NZ split. */
+  market: enumList(MARKET_VALUES),
+  /** The automatic introduction email's state — the `Introduction` column. */
+  introduction: enumList(AUTO_MAIL_STATUS_VALUES),
   /** The two conditions the monitor exists to surface, as one-click filters. */
   attention: z.enum(['unassigned', 'stale']).optional(),
+  /**
+   * Movement, which is a different question from `attention`.
+   *
+   * `replied` and `awaiting` read real fields (`replyReceived`, and the
+   * introduction status for "we wrote, they have not"). There is deliberately
+   * no follow-up option: `Lead` records no follow-up date, and an option that
+   * silently matched something else would be worse than its absence.
+   */
+  activity: z.enum(['recent', 'quiet', 'replied', 'awaiting']).optional(),
   /** Restrict to one person's register. Used by the admin user profile. */
   owner: z.string().regex(/^[a-f\d]{24}$/i).optional(),
+
+  /**
+   * Which date the range applies to, named explicitly.
+   *
+   * A range filter that does not say what it filters is a guess. `updatedAt` is
+   * offered as "last activity" for the same reason the column is — it is the
+   * record's last modification, which the page states rather than implies.
+   */
+  dateField: z.enum(['createdAt', 'quoteDate', 'updatedAt', 'travelDate']).default('createdAt'),
+  preset: z.enum(DATE_PRESETS).optional(),
+  from: isoDate,
+  to: isoDate,
+
   /** Server-side paging. The monitor used to return a fixed newest-200 slice. */
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(200).default(50),

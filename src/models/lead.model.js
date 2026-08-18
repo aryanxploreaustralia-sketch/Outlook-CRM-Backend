@@ -239,6 +239,38 @@ const leadSchema = new Schema(
     /** The automatic introductory email. */
     autoMail: { type: autoMailSchema, default: () => ({}) },
 
+    /**
+     * The follow-up chase, when the introduction went unanswered.
+     *
+     * Additive and sparse: an existing lead has `count: 0` by default and is
+     * indistinguishable from one that was never considered, which is what makes
+     * this safe to add to a live collection.
+     *
+     * ## Why so little is stored here
+     *
+     * No `replyStatus`, no `followUpStatus`, no `initialEmailSentAt`. Every one
+     * of those is *derivable*: the reply pipeline already maintains
+     * `replyReceived` and `lastReplyAt`, and `autoMail.sentAt` is when the
+     * introduction went out. Copying them here would create a second version of
+     * the truth that a missed write silently desynchronises — and the failure
+     * mode is chasing a customer who already replied, which is exactly what
+     * this feature exists to avoid.
+     *
+     * What genuinely is not derivable is *how many follow-ups have been sent
+     * and when*, because a follow-up is an ordinary `Mail` row otherwise
+     * indistinguishable from any other message. That is what lives here.
+     */
+    followUp: {
+      /** How many follow-ups have gone out. The sequence ceiling reads this. */
+      count: { type: Number, default: 0, min: 0 },
+      /** Indexed with `owner`: the eligibility query filters on both. */
+      lastSentAt: { type: Date, default: null },
+      /** What was actually said, so the timeline can show it. */
+      lastSubject: { type: String, default: null, maxlength: 998 },
+      /** Who pressed send. A follow-up is always a human act. */
+      lastSentBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+    },
+
     /** The upload that first created this lead. */
     firstImportJob: { type: Schema.Types.ObjectId, ref: 'ImportJob', default: null },
     /** The most recent upload that contained this reference. */
@@ -272,6 +304,15 @@ leadSchema.index({ owner: 1, contact: 1, quoteDate: -1 })
 
 /** The auto-mail queue: leads that still owe an introductory email. */
 leadSchema.index({ owner: 1, 'autoMail.status': 1, isDeleted: 1 })
+
+/*
+ * The follow-up queue.
+ *
+ * Its query is "this owner's leads, introduced, unanswered, never chased", and
+ * without this it is a collection scan filtered in memory on every page load of
+ * a register that runs to thousands of rows.
+ */
+leadSchema.index({ owner: 1, 'autoMail.status': 1, replyReceived: 1, 'followUp.count': 1, isDeleted: 1 })
 
 /** Global search across the register. */
 leadSchema.index(

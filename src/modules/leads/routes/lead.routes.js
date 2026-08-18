@@ -9,13 +9,14 @@ import express, { Router } from 'express'
 import rateLimit from 'express-rate-limit'
 
 import { requireAuth } from '../../../middlewares/authenticate.js'
-import { requirePermission } from '../../../middlewares/authorise.js'
+import { requireAllPermissions, requirePermission } from '../../../middlewares/authorise.js'
 import { PERMISSIONS } from '../../../constants/permissions.js'
 import { ERROR_CODES } from '../../../constants/errorCodes.js'
 import { HTTP_STATUS } from '../../../constants/httpStatus.js'
 import { MAX_FILE_BYTES } from '../../import/constants/importConstants.js'
 import * as controller from '../controllers/lead.controller.js'
 import * as workbook from '../controllers/workbookSync.controller.js'
+import * as followUp from '../controllers/followUp.controller.js'
 
 /**
  * Throttle for workbook operations.
@@ -94,6 +95,24 @@ leadRouter.get('/workbook/history', workbook.history)
 leadRouter.get('/workbook/statistics', workbook.statistics)
 leadRouter.post('/workbook/sync', workbookLimiter, rawUpload, workbook.sync)
 leadRouter.post('/resend', workbook.resend)
+
+/**
+ * Follow-ups: the second email, when the first went unanswered.
+ *
+ * Literal paths, registered above `/:id` so "follow-up" is never read as a
+ * lead id.
+ *
+ * Reading the queue needs `leads.view` — it is a view of the register.
+ * Sending needs `compose.send` as well, because it puts a message in front of
+ * a customer, and that is a different act from looking at a list. A viewer can
+ * see who is waiting and cannot email them.
+ */
+leadRouter.get('/follow-up', requirePermission(PERMISSIONS.LEADS_VIEW), followUp.list)
+leadRouter.post(
+  '/follow-up/send',
+  requireAllPermissions([PERMISSIONS.LEADS_VIEW, PERMISSIONS.COMPOSE_SEND]),
+  followUp.send,
+)
 
 /**
  * Bulk delete.

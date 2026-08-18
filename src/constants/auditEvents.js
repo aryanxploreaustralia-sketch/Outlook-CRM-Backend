@@ -157,6 +157,7 @@ export const AUDIT_EVENTS = Object.freeze({
 
   // --- Roles ---------------------------------------------------------------
   ROLE_CHANGED: { action: 'role.changed', category: ROLE, label: "Changed a user's role", entityType: AUDIT_ENTITY.USER, severity: CRITICAL },
+  ROLE_PERMISSIONS_UPDATED: { action: 'role.permissions_updated', category: ROLE, label: 'Changed a role definition', entityType: AUDIT_ENTITY.SYSTEM, severity: CRITICAL },
 
   // --- Mailboxes -----------------------------------------------------------
   MAILBOX_CONNECTED: { action: 'mailbox.connected', category: MAILBOX, label: 'Connected a mailbox', entityType: AUDIT_ENTITY.MAILBOX, severity: CRITICAL },

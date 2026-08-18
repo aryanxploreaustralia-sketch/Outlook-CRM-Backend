@@ -15,6 +15,7 @@
 
 import { resolveSession, touchSession } from '../services/session.service.js'
 import { asyncHandler } from '../utils/asyncHandler.js'
+import { ensureRoleOverridesFresh } from '../modules/admin/services/rolePermission.service.js'
 import { ApiError } from '../utils/ApiError.js'
 
 /**
@@ -53,6 +54,20 @@ export const loadSession = asyncHandler(async (req, _res, next) => {
     user: session.user,
     outlookAccount: session.outlookAccount ?? null,
   }
+
+  /*
+   * Role definitions, refreshed here and nowhere else.
+   *
+   * `resolvePermissions` is synchronous and is called from guards that cannot
+   * await anything, so the overlay it reads has to be current *before* the
+   * request reaches them. This is the last async point that every authenticated
+   * request passes through, which makes it the only place the refresh can go.
+   *
+   * TTL-guarded, so this is a timestamp comparison on all but one request in
+   * thirty seconds, and a failed read leaves the previous definitions in place
+   * rather than failing the request. See `rolePermission.service.js`.
+   */
+  await ensureRoleOverridesFresh()
 
   // Fire-and-forget: a failed audit-timestamp write must not fail the request.
   void touchSession(session).catch(() => {})

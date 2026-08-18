@@ -11,6 +11,7 @@
  */
 
 import { connectDatabase, disconnectDatabase } from './config/database.js'
+import { refreshRoleOverrides } from './modules/admin/services/rolePermission.service.js'
 import { config } from './config/index.js'
 import { createApp } from './app.js'
 import {
@@ -193,6 +194,27 @@ async function bootstrap() {
   const databaseConnected = await connectDatabase()
   if (!databaseConnected) {
     log.warn('Starting without a database connection - dependent routes will fail')
+  }
+
+  /*
+   * Stored role definitions, loaded before the first request.
+   *
+   * Without this the process would serve the built-in matrix until the first
+   * authenticated request triggered a refresh — briefly enforcing permissions an
+   * administrator had already changed. `loadSession` keeps it current from then
+   * on; this closes the window at startup.
+   *
+   * Tolerated on failure, like the database connection above: a deployment that
+   * cannot read its overrides still enforces the built-in matrix, which is a
+   * safe and complete permission model rather than an absent one.
+   */
+  if (databaseConnected) {
+    try {
+      const customised = await refreshRoleOverrides()
+      if (customised > 0) log.info(`Loaded ${customised} customised role definition(s)`)
+    } catch (error) {
+      log.warn(`Could not load role definitions - enforcing the built-in matrix: ${error.message}`)
+    }
   }
 
   /**

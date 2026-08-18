@@ -224,18 +224,93 @@ const RESOLVED = (() => {
 })()
 
 /**
+ * Roles an administrator may redefine, and the reasons the rest may not.
+ *
+ * `OWNER` is excluded and must stay excluded. Every account in this deployment
+ * holds it, and it is the only role carrying `OWNER_ONLY_PERMISSIONS` — so a
+ * mis-click that stripped it would not degrade one person's access, it would
+ * remove the deployment's ability to administer itself, with no path back
+ * through the interface that just removed it. The owner is the recovery route
+ * for every other role's mistakes and therefore cannot be one of them.
+ *
+ * `MEMBER` is excluded because it is a legacy alias that shares Sales' `Set` by
+ * identity. Editing it would silently edit Sales.
+ */
+export const EDITABLE_ROLES = Object.freeze([
+  ROLES.ADMIN,
+  ROLES.MANAGER,
+  ROLES.SALES,
+  ROLES.SUPPORT,
+  ROLES.VIEWER,
+])
+
+/**
+ * Stored departures from `MATRIX`, layered over it at lookup time.
+ *
+ * ## Why an overlay and not a rewrite of the lookup
+ *
+ * `permissionsForRole` is called on **every authenticated request**, from
+ * synchronous middleware, and by `roleHasPermission`, `roleHasAdminAccess` and
+ * `isOrganizationAdministrator` beneath it. Making it read the database would
+ * mean making it async, which would mean touching every authorization call site
+ * in the product — an enormous change to the one part of the system where a
+ * mistake is a security incident rather than a bug.
+ *
+ * An overlay keeps the signature, the synchronous contract and every caller
+ * exactly as they were. The database is read when the process starts and when a
+ * role is edited; lookups stay a hash hit on a frozen `Set`.
+ *
+ * Frozen `Set`s, replaced wholesale rather than mutated: a request that reads
+ * this mid-update sees either the old definition or the new one, never a
+ * half-applied set of permissions.
+ */
+let OVERRIDES = Object.freeze({})
+
+/**
+ * Replaces the overlay. Called by the role service — nothing else should.
+ *
+ * A role absent from `next` reverts to its built-in default, which is what makes
+ * "reset this role" require deleting a row rather than storing an inverse.
+ *
+ * @param {Record<string, string[]>} next
+ */
+export function setRoleOverrides(next) {
+  OVERRIDES = Object.freeze(
+    Object.fromEntries(
+      Object.entries(next ?? {})
+        // A role nobody may edit cannot be overridden even if a row for it
+        // exists — a hand-written document must not reach further than the
+        // endpoint that is supposed to be the only way in.
+        .filter(([role]) => EDITABLE_ROLES.includes(role))
+        .map(([role, permissions]) => [role, Object.freeze(new Set(permissions))]),
+    ),
+  )
+}
+
+/** The built-in bundle for a role, ignoring any override. */
+export function defaultPermissionListForRole(role) {
+  return [...(RESOLVED[role] ?? EMPTY)].sort()
+}
+
+/** Whether a role currently differs from its built-in default. */
+export function roleIsCustomised(role) {
+  return Object.hasOwn(OVERRIDES, role)
+}
+
+/**
  * The permissions a role holds.
  *
- * An unrecognised role resolves to **an empty set, never to a default bundle**.
- * That is the safe direction to fail: a typo, or a role written by a future
- * version of the software, grants nothing and the request is refused — rather
- * than silently inheriting somebody else's access.
+ * A stored override wins over the built-in bundle. An unrecognised role resolves
+ * to **an empty set, never to a default bundle**. That is the safe direction to
+ * fail: a typo, or a role written by a future version of the software, grants
+ * nothing and the request is refused — rather than silently inheriting somebody
+ * else's access.
  *
  * @param {?string} role
  * @returns {Set<string>}
  */
 export function permissionsForRole(role) {
-  return RESOLVED[role] ?? EMPTY
+  return OVERRIDES[role] ?? RESOLVED[role] ?? EMPTY
 }
 
 /**
@@ -302,6 +377,15 @@ export function buildRoleMatrix() {
     role,
     permissions: permissionListForRole(role),
     adminAccess: roleHasAdminAccess(role),
+    /*
+     * Whether the console may offer this role's checkboxes, decided here rather
+     * than in the console. The screen that renders the matrix and the endpoint
+     * that enforces it then cannot disagree about which roles are protected —
+     * and a client that ignores the flag still meets the same rule server-side.
+     */
+    editable: EDITABLE_ROLES.includes(role),
+    customised: roleIsCustomised(role),
+    defaultPermissions: defaultPermissionListForRole(role),
   }))
 }
 

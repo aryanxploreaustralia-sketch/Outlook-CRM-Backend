@@ -26,6 +26,7 @@ import {
   ANALYTICS_GRANULARITY_VALUES,
   ANALYTICS_MAX_BUCKETS,
 } from '../constants/adminConstants.js'
+import { PERMISSION_VALUES } from '../../../constants/permissions.js'
 import { CAMPAIGN_STATUS_VALUES } from '../../campaigns/constants/campaignConstants.js'
 import { LEAD_STAGE_VALUES, MARKET_VALUES } from '../../leads/constants/leadConstants.js'
 import { AUTO_MAIL_STATUS_VALUES } from '../../leads/constants/syncConstants.js'
@@ -146,8 +147,24 @@ export const adminLeadQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
 })
 
+/**
+ * Body for `PATCH /admin/roles/:role`.
+ *
+ * The complete permission list, not a delta. The service compares it against
+ * what the role holds to derive what was granted and revoked, so the client
+ * never has to describe the change — only the desired end state, which is
+ * exactly what the checkboxes on screen represent.
+ *
+ * Membership is checked against `PERMISSION_VALUES` here and again in the
+ * service. An empty list is legal: a role may hold nothing.
+ */
+export const adminRolePermissionsSchema = z.object({
+  permissions: z.array(z.enum(PERMISSION_VALUES)).max(PERMISSION_VALUES.length),
+})
+
 export default {
   adminAnalyticsQuerySchema,
   adminCampaignQuerySchema,
   adminLeadQuerySchema,
+  adminRolePermissionsSchema,
 }

@@ -55,6 +55,7 @@ import {
 } from '../services/adminMonitoring.service.js'
 import { deleteUser, restoreUser } from '../services/adminUserLifecycle.service.js'
 import { recordAudit } from '../../audit/services/auditRecorder.service.js'
+import { updateRolePermissions } from '../services/rolePermission.service.js'
 import {
   activateUser,
   changeUserRole,
@@ -72,6 +73,7 @@ import {
   adminAnalyticsQuerySchema,
   adminCampaignQuerySchema,
   adminLeadQuerySchema,
+  adminRolePermissionsSchema,
 } from '../validators/admin.validator.js'
 import {
   adminUserInviteSchema,
@@ -153,6 +155,60 @@ export const getAdminRoles = asyncHandler(async (_req, res) =>
     },
   }),
 )
+
+/**
+ * PATCH /api/v1/admin/roles/:role
+ *
+ * The whole permission list, replacing what the role held. Every rule about who
+ * may do this and what they may write lives in the service — the controller
+ * validates the shape, names the actor, and records what happened.
+ */
+export const patchAdminRolePermissions = asyncHandler(async (req, res) => {
+  const { permissions } = adminRolePermissionsSchema.parse(req.body)
+
+  const result = await updateRolePermissions({
+    role: req.params.role,
+    permissions,
+    actor: req.auth.user,
+  })
+
+  /*
+   * Logged as CRITICAL, and logged with the difference rather than the result.
+   *
+   * "Administrator now holds 35 permissions" does not answer the question an
+   * audit log is read for. "granted users.invite, revoked leads.delete" does,
+   * and it is the difference that someone reviewing an incident is looking for.
+   *
+   * A no-op edit writes nothing: re-saving an unchanged role would otherwise
+   * fill the log with entries that record nobody doing anything.
+   */
+  if (!result.unchanged) {
+    await recordAudit({
+      req,
+      event: 'ROLE_PERMISSIONS_UPDATED',
+      summary: [
+        `Changed the ${ROLE_LABELS[result.role] ?? result.role} role`,
+        result.granted.length > 0 && `granted ${result.granted.join(', ')}`,
+        result.revoked.length > 0 && `revoked ${result.revoked.join(', ')}`,
+      ]
+        .filter(Boolean)
+        .join(' — '),
+      target: { id: result.role, name: ROLE_LABELS[result.role] ?? result.role },
+      affectedCount: result.granted.length + result.revoked.length,
+      metadata: {
+        role: result.role,
+        granted: result.granted,
+        revoked: result.revoked,
+        resetToDefault: result.resetToDefault ?? false,
+      },
+    })
+  }
+
+  return sendSuccess(res, {
+    message: result.unchanged ? 'No change.' : 'Role permissions updated.',
+    data: result,
+  })
+})
 
 /** GET /api/v1/admin/dashboard */
 export const getAdminDashboard = asyncHandler(async (req, res) => {
@@ -947,6 +1003,7 @@ export default {
   postAdminMailboxUnassign,
   putAdminUserMailboxes,
   getAdminRoles,
+  patchAdminRolePermissions,
   getMyPermissions,
   getAdminAuditSummary,
   getAdminCampaigns,

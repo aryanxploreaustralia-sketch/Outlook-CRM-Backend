@@ -345,6 +345,22 @@ router.patch(
 // of it that can drift from the code.
 router.get('/roles', requirePermission(PERMISSIONS.ROLES_VIEW), controller.getAdminRoles)
 
+/*
+ * Rewriting a role definition. Gated on `roles.manage`, the permission the
+ * matrix already names for exactly this, rather than on a role comparison —
+ * which is the rule the rest of the product follows and the reason a permission
+ * system exists at all.
+ *
+ * Who may edit *which* role, and what they may put in it, is decided in the
+ * service against the request's own actor: holding `roles.manage` opens the
+ * door, it does not decide what is behind it.
+ */
+router.patch(
+  '/roles/:role',
+  requirePermission(PERMISSIONS.ROLES_MANAGE),
+  controller.patchAdminRolePermissions,
+)
+
 // --- Mailboxes -------------------------------------------------------------
 //
 // Reads need `mailboxes.view`; changing who may use a mailbox needs

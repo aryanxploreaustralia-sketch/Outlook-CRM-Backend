@@ -21,7 +21,6 @@ import { ROLES } from '../../../constants/roles.js'
 import { USER_STATUS } from '../../../constants/userStatus.js'
 import {
   EDITABLE_ROLES,
-  OWNER_ONLY_PERMISSIONS,
   defaultPermissionListForRole,
   permissionsForRole,
   setRoleOverrides,
@@ -124,20 +123,24 @@ export async function updateRolePermissions({ role, permissions, actor }) {
   }
 
   /*
-   * Owner-only permissions stay owner-only.
+   * `OWNER_ONLY_PERMISSIONS` is a **default**, not a ceiling.
    *
-   * These are the two the matrix withholds from every other role by design —
-   * granting one here would be a privilege escalation dressed as a checkbox,
-   * and it would make a role that the Owner role was defined to be the only
-   * holder of.
+   * It still builds the matrix — Administrator's built-in bundle is everything
+   * except those two, which is why the role starts at 36 of 38. What it no
+   * longer does is refuse them at this endpoint: an owner may now grant
+   * `users.invite` to a role that should have it, which is the entire point of
+   * a permission editor.
+   *
+   * That is only safe because the escalation it was guarding is now blocked
+   * where it actually happens. `inviteUser` applies `assignableRolesFor`, so an
+   * administrator holding `users.invite` can invite a manager, sales, support or
+   * viewer — and cannot invite an owner or a peer administrator. The route that
+   * would have handed somebody a senior identity is closed at the route, rather
+   * than by withholding the permission from everyone forever.
+   *
+   * The actor ceiling immediately below is what still prevents escalation here:
+   * nobody grants a permission they do not themselves hold.
    */
-  const ownerOnly = requested.filter((permission) => OWNER_ONLY_PERMISSIONS.includes(permission))
-  if (ownerOnly.length > 0) {
-    throw ApiError.forbidden(
-      `These permissions belong to the Owner alone: ${ownerOnly.join(', ')}.`,
-      { code: 'OWNER_ONLY_PERMISSION' },
-    )
-  }
 
   // --- The actor ----------------------------------------------------------
   /*

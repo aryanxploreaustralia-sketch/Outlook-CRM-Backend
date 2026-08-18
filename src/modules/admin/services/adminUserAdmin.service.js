@@ -28,6 +28,7 @@ import { createContextLogger } from '../../../utils/logger.js'
 import { destroyAllUserSessions } from '../../../services/session.service.js'
 import { ROLES, ROLE_LABELS } from '../../../constants/roles.js'
 import {
+  assignableRolesFor,
   canAssignRole,
   canDeleteUser,
   canModifyRoleOf,
@@ -178,6 +179,34 @@ export async function getUser(id, viewer = null) {
  */
 export async function inviteUser(input, actor) {
   const email = input.email.trim().toLowerCase()
+
+  /*
+   * An invitation cannot exceed the inviter's own rank.
+   *
+   * `changeUserRole` has always enforced this through `canAssignRole` — an
+   * administrator may promote somebody to manager, never to owner or to a peer
+   * administrator. Invitation is the same decision made about a person who does
+   * not exist yet, and it was not enforced here at all: the role in the body was
+   * written to the record as given.
+   *
+   * That was survivable only while `users.invite` was owner-only, and an owner
+   * has no ceiling to exceed. Once the permission can be granted to any role,
+   * the gap becomes the escalation the matrix used to prevent by withholding it:
+   * an administrator invites an owner at an address they control and signs in
+   * with a senior identity.
+   *
+   * `assignableRolesFor` is the same helper the role-change path uses, so the
+   * two answers cannot drift. An owner still invites anybody.
+   */
+  const allowedRoles = assignableRolesFor(actor.role)
+  if (!allowedRoles.includes(input.role)) {
+    throw ApiError.forbidden(
+      `You cannot invite somebody as ${ROLE_LABELS[input.role] ?? input.role}. You may invite: ${allowedRoles
+        .map((role) => ROLE_LABELS[role] ?? role)
+        .join(', ')}.`,
+      { details: { reason: 'role_above_ceiling' } },
+    )
+  }
 
   /**
    * The Microsoft address, when the invitation is for somebody who will sign in

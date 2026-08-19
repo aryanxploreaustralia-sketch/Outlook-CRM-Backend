@@ -319,13 +319,36 @@ export async function rollbackImport({ owner, importJob }) {
   const leads = await Lead.deleteMany({ owner, importJob })
 
   const candidateContacts = await Contact.find({ owner, importJob, isDeleted: false }).select('_id')
+
+  /*
+   * Which of this job's contacts still have an enquiry, in one query.
+   *
+   * This asked per contact and updated per contact — the same N+1 the main
+   * import had. `$group` returns the ids that still have at least one live
+   * lead; every candidate absent from that set has none left and is soft
+   * deleted together.
+   *
+   * The leads were removed immediately above, so this runs against the state
+   * after deletion — same ordering as before.
+   */
   let contactsRemoved = 0
 
-  for (const contact of candidateContacts) {
-    const remaining = await Lead.countDocuments({ contact: contact._id, isDeleted: false })
-    if (remaining === 0) {
-      await Contact.updateOne({ _id: contact._id }, { $set: { isDeleted: true } })
-      contactsRemoved += 1
+  if (candidateContacts.length > 0) {
+    const candidateIds = candidateContacts.map((contact) => contact._id)
+
+    const stillReferenced = await Lead.aggregate([
+      { $match: { contact: { $in: candidateIds }, isDeleted: false } },
+      { $group: { _id: '$contact' } },
+    ])
+
+    const keep = new Set(stillReferenced.map((row) => String(row._id)))
+    const orphaned = candidateIds.filter((id) => !keep.has(String(id)))
+
+    if (orphaned.length > 0) {
+      // `updateMany`, not `bulkWrite`: every one of these gets the identical
+      // change, so a single filtered update expresses it exactly.
+      await Contact.updateMany({ _id: { $in: orphaned } }, { $set: { isDeleted: true } })
+      contactsRemoved = orphaned.length
     }
   }
 

@@ -69,17 +69,39 @@ async function nameMap(ids) {
  * shows — and there would be no way to say which was right.
  */
 export async function listAdminCampaigns(query = {}) {
-  const { status, search } = query
+  /*
+   * `limit` defaults to 200 — the fixed ceiling this function used before it
+   * accepted paging — so every existing caller behaves exactly as it did. The
+   * admin user profile passes a smaller page size and a page number.
+   */
+  const { status, search, owner, page = 1, limit = 200 } = query
 
   const filter = {}
   if (status) filter.status = status
   if (search) filter.name = safePattern(search)
 
-  const campaigns = await Campaign.find(filter)
-    .select('name status owner senderMailboxes stats startedAt completedAt createdAt lastError')
-    .sort({ startedAt: -1, createdAt: -1 })
-    .limit(200)
-    .lean()
+  /*
+   * Scopes the monitor to one person, for the admin user profile.
+   *
+   * Filtered here rather than on the returned page. The console used to fetch
+   * this list unscoped and match `ownerId` in the browser, which silently
+   * capped a user's register at whatever fell inside the first 200 rows
+   * globally — so a busy consultant's campaigns could be missing with nothing
+   * on screen to say so. Absent means every owner, which is what the monitor
+   * page itself asks for.
+   */
+  if (owner) filter.owner = owner
+
+  const [campaigns, total] = await Promise.all([
+    Campaign.find(filter)
+      .select('name status owner senderMailboxes stats startedAt completedAt createdAt lastError')
+      .sort({ startedAt: -1, createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean(),
+    // Across everything the filter matches, not just this page.
+    Campaign.countDocuments(filter),
+  ])
 
   const [owners, mailboxes] = await Promise.all([
     nameMap(campaigns.map((campaign) => campaign.owner)),
@@ -129,6 +151,18 @@ export async function listAdminCampaigns(query = {}) {
   })
 
   return {
+    /*
+     * `pagination` is additive. Existing consumers read `items` and `summary`
+     * and are unaffected; only the user profile reads this.
+     */
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / limit)),
+      hasNext: page * limit < total,
+      hasPrevious: page > 1,
+    },
     items,
     summary: {
       total: items.length,

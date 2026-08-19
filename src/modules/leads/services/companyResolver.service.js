@@ -220,15 +220,63 @@ export function createResolver({ owner, importJob = null, createdBy = null }) {
       await company.recount()
     }
 
-    // Contact lead counts, in one pass per contact seen.
+    /*
+     * Contact lead counts, for every contact this import touched.
+     *
+     * ## Two round-trips, not two per contact
+     *
+     * This counted one contact at a time and saved each changed document
+     * individually — a `countDocuments` and possibly a `save()` per contact. On
+     * a workbook touching a thousand contacts that is a couple of thousand
+     * sequential round-trips, and the cost is latency rather than indexes:
+     * `{ contact: 1 }` makes each count fast, but not free to issue.
+     *
+     * One `$group` returns every count, and one `bulkWrite` applies them.
+     *
+     * ## Why a contact missing from the aggregate is set to zero
+     *
+     * `$group` only emits ids that matched. A contact whose last enquiry was
+     * deleted produces no bucket at all, and leaving it alone would preserve a
+     * stale non-zero count — the exact case the recount exists to correct. So
+     * the map is read with `?? 0` rather than iterated.
+     *
+     * ## Why `bulkWrite` is safe here despite the `pre('save')` hook
+     *
+     * `contactSchema.pre('save')` runs `deriveContactFields`, which derives
+     * `displayName`, `matchEmails`, `matchPhones` and `matchName` from the name,
+     * email and phone fields. None of them reads `leadCount`, and `leadCount`
+     * feeds none of them — so a `leadCount`-only write has nothing to re-derive.
+     * The derived values stay whatever the last real `save()` produced.
+     */
     const Lead = (await import('../../../models/lead.model.js')).Lead
 
-    for (const contact of contactCache.values()) {
-      const count = await Lead.countDocuments({ contact: contact._id, isDeleted: false })
-      if (contact.leadCount !== count) {
+    const contacts = [...contactCache.values()]
+    const contactIds = contacts.map((contact) => contact._id)
+
+    if (contactIds.length > 0) {
+      const grouped = await Lead.aggregate([
+        { $match: { contact: { $in: contactIds }, isDeleted: false } },
+        { $group: { _id: '$contact', count: { $sum: 1 } } },
+      ])
+
+      const countById = new Map(grouped.map((row) => [String(row._id), row.count]))
+
+      const operations = []
+
+      for (const contact of contacts) {
+        const count = countById.get(String(contact._id)) ?? 0
+        if (contact.leadCount === count) continue
+
+        // The in-memory document is updated too, so anything downstream in this
+        // import reads the same value the database now holds.
         contact.leadCount = count
-        await contact.save()
+        operations.push({
+          updateOne: { filter: { _id: contact._id }, update: { $set: { leadCount: count } } },
+        })
       }
+
+      // Only contacts whose value actually moved, exactly as before.
+      if (operations.length > 0) await Contact.bulkWrite(operations)
     }
 
     log.info('Import resolution finished', {

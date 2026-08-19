@@ -450,6 +450,31 @@ leadSchema.methods.toPublicJSON = function toPublicJSON() {
   }
 }
 
+/*
+ * The two cross-owner reads, which every index above misses.
+ *
+ * Every other compound index here is prefixed with `owner`, because the CRM is
+ * an owner-scoped register and that is the right shape for it. The admin
+ * console asks a different question — "every enquiry in the deployment" — so
+ * its queries carry no `owner` and cannot use any of them.
+ *
+ * `{ isDeleted, createdAt }` serves the admin lead monitor, which filters on
+ * `isDeleted` and sorts `createdAt` descending. Without it that query is a
+ * collection scan followed by an in-memory sort, run once for the page and
+ * again for each of its counts. The single-field `isDeleted` index the field
+ * declaration creates does not help the sort.
+ *
+ * `{ reference }` serves the administrator's global reference lookup. The
+ * existing `{ owner, reference }` unique index cannot answer it — `reference`
+ * is not a prefix — and the text index answers a different kind of query than
+ * an anchored prefix match.
+ *
+ * Both are additive. No existing index is altered, and no query changes: these
+ * only give the planner something better to choose.
+ */
+leadSchema.index({ isDeleted: 1, createdAt: -1 })
+leadSchema.index({ reference: 1 })
+
 export const Lead = mongoose.model('Lead', leadSchema)
 
 export default Lead

@@ -84,6 +84,15 @@ export const adminAnalyticsQuerySchema = z
 export const adminCampaignQuerySchema = z.object({
   search: searchTerm,
   status: z.enum(CAMPAIGN_STATUS_VALUES).optional(),
+  /** Restrict to one person's campaigns. Used by the admin user profile. */
+  owner: z.string().regex(/^[a-f\d]{24}$/i).optional(),
+  /*
+   * `limit` defaults to 200, the ceiling this endpoint already applied, so an
+   * existing caller that sends neither parameter gets exactly what it got
+   * before.
+   */
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(200).default(200),
 })
 
 /**

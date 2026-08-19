@@ -1,7 +1,7 @@
 /** Signature: storage shape, sanitisation on save, and insertion semantics. */
 
 const B = new URL('../src', import.meta.url).href
-const { signatureSchema } = await import(`${B}/modules/profile/validators/profile.validator.js`)
+const { signatureSchema, MAX_SIGNATURE_CHARS } = await import(`${B}/modules/profile/validators/profile.validator.js`)
 const { User } = await import(`${B}/models/user.model.js`)
 const { sanitizeEmailHtml } = await import(`${B}/utils/emailHtml.js`)
 
@@ -71,13 +71,46 @@ check('sanitising is idempotent', once === twice)
 check('signature still present after both passes', twice.includes('Hemant Panchal'))
 check('variable still present after both passes', twice.includes('{{ContactPerson}}'))
 
-console.log('\n=== oversized signature refused ===')
-try {
-  save('<p>' + 'x'.repeat(21_000) + '</p>')
-  check('20,000 character cap', false, 'was ACCEPTED')
-} catch {
-  check('20,000 character cap', true, 'refused')
+console.log('\n=== size limits are internally consistent with the image ceiling ===')
+const MAX_IMAGE_B64 = Math.ceil((512 * 1024 * 4) / 3)
+const img = (chars) => '<img src="data:image/png;base64,' + 'A'.repeat(chars) + '" alt="logo" style="max-width:100%;height:auto;" />'
+
+check('cap exceeds a max-size embedded image', MAX_SIGNATURE_CHARS > MAX_IMAGE_B64,
+  MAX_SIGNATURE_CHARS.toLocaleString() + ' > ' + MAX_IMAGE_B64.toLocaleString())
+check('cap stays far below MongoDB 16 MB', MAX_SIGNATURE_CHARS < 16 * 1024 * 1024 * 0.25,
+  Math.round(MAX_SIGNATURE_CHARS / 1024) + ' KB')
+
+const accepts = (label, html) => {
+  try { save(html); check(label, true, 'saved') }
+  catch (error) { check(label, false, error.issues?.[0]?.message ?? error.message) }
 }
+const refuses = (label, html) => {
+  try { save(html); check(label, false, 'was ACCEPTED') }
+  catch { check(label, true, 'refused') }
+}
+
+accepts('text-only signature', '<p>Kind Regards,</p><p>Hemant Panchal</p>')
+accepts('normal formatted signature', RICH)
+accepts('signature with a 20 KB logo', SIG + img(Math.ceil((20 * 1024 * 4) / 3)))
+accepts('signature with a 200 KB logo', SIG + img(Math.ceil((200 * 1024 * 4) / 3)))
+
+const XPLORE =
+  '<p>Kind Regards,</p>' +
+  '<p><strong>Hemant Panchal</strong> | Sr. Operations Manager</p>' +
+  '<p>Email: <a href="mailto:res@example.com">res@example.com</a><br />' +
+  'Phone: +91 00000 00000<br />' +
+  'Web: <a href="https://xploreaustralia.com">xploreaustralia.com</a></p>' +
+  img(Math.ceil((320 * 1024 * 4) / 3))
+
+accepts('realistic signature with embedded banner', XPLORE)
+const xploreSaved = save(XPLORE)
+check('banner survives sanitising', xploreSaved.includes('data:image/png;base64'))
+check('bold survives', xploreSaved.includes('<strong>'))
+check('links survive', xploreSaved.includes('mailto:res@example.com') && xploreSaved.includes('xploreaustralia.com'))
+check('image sizing survives', xploreSaved.includes('max-width:100%'))
+
+refuses('signature beyond the hard cap', '<p>' + 'x'.repeat(MAX_SIGNATURE_CHARS + 1) + '</p>')
+check('clearing still allowed', save('') === '')
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

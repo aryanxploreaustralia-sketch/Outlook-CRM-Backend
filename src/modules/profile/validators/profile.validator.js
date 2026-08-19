@@ -155,9 +155,49 @@ export default {
  *
  * An empty string is legal: clearing the signature is an ordinary thing to do.
  */
+/**
+ * The largest image the editor will embed, in bytes. Mirrors the ceiling in
+ * `RichTextEditor.insertImage`.
+ */
+const MAX_EMBEDDED_IMAGE_BYTES = 512 * 1024
+
+/**
+ * How large a signature may be, in characters of HTML.
+ *
+ * ## Derived, not picked
+ *
+ * The previous value was a flat 20,000, chosen before images could be inserted.
+ * Base64 costs four characters for every three bytes, so the 512 KB image the
+ * editor happily embeds becomes ~699,000 characters on its own — thirty-five
+ * times the cap. In practice any logo above about 14 KB made the signature
+ * unsaveable, which is every real logo.
+ *
+ * So the bound is computed from the image ceiling rather than written down
+ * beside it. The two cannot drift apart again: change the image limit and this
+ * follows.
+ *
+ * ## Why there is still a hard cap
+ *
+ * This is stored on the user document. MongoDB's limit is 16 MB, and a
+ * signature is copied into every message built from it, so an unbounded field
+ * would be an unbounded row *and* an unbounded email. One image plus generous
+ * room for text, links and a table lands near 1 MB — comfortable for any real
+ * signature, and two orders of magnitude below the document limit.
+ */
+const SIGNATURE_HEADROOM_CHARS = 300_000
+export const MAX_SIGNATURE_CHARS =
+  Math.ceil((MAX_EMBEDDED_IMAGE_BYTES * 4) / 3) + SIGNATURE_HEADROOM_CHARS
+
 export const signatureSchema = z.object({
   signatureHtml: z
     .string()
-    .max(20_000, 'A signature cannot exceed 20,000 characters.')
+    .max(
+      MAX_SIGNATURE_CHARS,
+      // Actionable rather than arithmetical: the reader cannot count characters,
+      // but they can make a picture smaller, which is the cause every time.
+      'That signature is too large to save. This is almost always an embedded image — please use a smaller logo.',
+    )
+    // Bounded before sanitising, so an oversized payload is refused rather than
+    // parsed. What is stored is the sanitised output, which is never larger.
     .transform(sanitizeEmailHtml),
 })

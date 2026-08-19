@@ -87,6 +87,101 @@ function base64ByteLength(value) {
   return Math.floor((value.length * 3) / 4) - padding
 }
 
+/**
+ * The file formats this CRM will attach, and how each one is recognised.
+ *
+ * ## Why the declared MIME type is not enough on its own
+ *
+ * `contentType` arrives from the browser and is therefore a claim, not a fact.
+ * Renaming `evil.exe` to `invoice.pdf` makes most browsers report
+ * `application/pdf`, and the previous validation accepted that at face value.
+ *
+ * ## Three checks, and why all three
+ *
+ * The extension decides which format is expected. The declared MIME type must
+ * be one this deployment associates with that extension. And the decoded bytes
+ * must actually begin with that format's signature — the only one of the three
+ * a renamed file cannot satisfy.
+ *
+ * ## What a signature can and cannot prove
+ *
+ * It proves the file begins as the claimed format. It does not prove the rest
+ * is well-formed: validating that a PDF parses, or that a workbook opens, needs
+ * a parser per format and is a different kind of change. `.docx`, `.xlsx` and
+ * `.zip` are all ZIP containers and are indistinguishable by signature, so a
+ * spreadsheet renamed `.docx` passes — harmless, since both are already
+ * permitted and neither executes.
+ *
+ * The legacy `.doc`/`.xls` formats are OLE2 compound files and share one
+ * signature with each other for the same reason.
+ */
+const FILE_FORMATS = Object.freeze({
+  pdf: {
+    mimeTypes: ['application/pdf'],
+    // "%PDF"
+    signatures: [[0x25, 0x50, 0x44, 0x46]],
+  },
+  png: {
+    mimeTypes: ['image/png'],
+    signatures: [[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]],
+  },
+  jpg: {
+    mimeTypes: ['image/jpeg', 'image/jpg'],
+    signatures: [[0xff, 0xd8, 0xff]],
+  },
+  jpeg: {
+    mimeTypes: ['image/jpeg', 'image/jpg'],
+    signatures: [[0xff, 0xd8, 0xff]],
+  },
+  /*
+   * The three ZIP signatures: a local file header, an empty archive, and a
+   * spanned archive. An empty `.xlsx` is legal and begins `PK\x05\x06`, so
+   * checking only `PK\x03\x04` would reject it.
+   */
+  zip: {
+    mimeTypes: ['application/zip', 'application/x-zip-compressed', 'multipart/x-zip'],
+    signatures: [[0x50, 0x4b, 0x03, 0x04], [0x50, 0x4b, 0x05, 0x06], [0x50, 0x4b, 0x07, 0x08]],
+  },
+  xlsx: {
+    mimeTypes: ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+    signatures: [[0x50, 0x4b, 0x03, 0x04], [0x50, 0x4b, 0x05, 0x06], [0x50, 0x4b, 0x07, 0x08]],
+  },
+  docx: {
+    mimeTypes: ['application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+    signatures: [[0x50, 0x4b, 0x03, 0x04], [0x50, 0x4b, 0x05, 0x06], [0x50, 0x4b, 0x07, 0x08]],
+  },
+  // OLE2 compound file — the pre-2007 Office container.
+  xls: {
+    mimeTypes: ['application/vnd.ms-excel', 'application/msexcel'],
+    signatures: [[0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]],
+  },
+  doc: {
+    mimeTypes: ['application/msword'],
+    signatures: [[0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]],
+  },
+})
+
+export const ALLOWED_ATTACHMENT_EXTENSIONS = Object.freeze(Object.keys(FILE_FORMATS))
+
+/**
+ * A declared type of `application/octet-stream` is accepted as "unknown".
+ *
+ * Some browsers and most drag-and-drop sources report it for a file they
+ * recognise perfectly well. Refusing it would reject legitimate attachments,
+ * and it buys nothing: the signature check below still has to pass, and that is
+ * the check a renamed executable fails.
+ */
+const UNKNOWN_MIME = 'application/octet-stream'
+
+/** Whether the decoded bytes begin with any of a format's signatures. */
+function matchesSignature(buffer, signatures) {
+  return signatures.some(
+    (signature) =>
+      buffer.length >= signature.length &&
+      signature.every((byte, index) => buffer[index] === byte),
+  )
+}
+
 const attachmentSchema = z.object({
   name: z
     .string()
@@ -114,6 +209,47 @@ const attachmentSchema = z.object({
     .transform((value) => value.replace(/^data:[^;,]*;base64,/, '').replace(/\s+/g, ''))
     .refine((value) => BASE64_PATTERN.test(value), 'Attachment content must be base64-encoded.'),
 })
+  /*
+   * The cross-field check. It runs after the three fields above have parsed, so
+   * `name` has already been stripped of path components and `contentBytes` is
+   * known to be base64 — this only has to decide whether they agree.
+   */
+  .superRefine((file, ctx) => {
+    const extension = file.name.includes('.') ? file.name.split('.').pop().toLowerCase() : ''
+    const format = FILE_FORMATS[extension]
+
+    if (!format) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['name'],
+        message: `“${file.name}” is not a file type this CRM will attach. Allowed: ${ALLOWED_ATTACHMENT_EXTENSIONS.join(', ')}.`,
+      })
+      return
+    }
+
+    const declared = String(file.contentType ?? '').toLowerCase().split(';')[0].trim()
+    if (declared !== UNKNOWN_MIME && !format.mimeTypes.includes(declared)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['contentType'],
+        message: `“${file.name}” is declared as ${declared}, which does not match a .${extension} file.`,
+      })
+      return
+    }
+
+    // Only the leading bytes are decoded. A base64 prefix decodes independently
+    // of the rest, so the whole of a 3 MB file never has to be materialised
+    // just to read its first eight bytes.
+    const head = Buffer.from(file.contentBytes.slice(0, 64), 'base64')
+
+    if (!matchesSignature(head, format.signatures)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['contentBytes'],
+        message: `“${file.name}” does not contain ${extension.toUpperCase()} data. A file renamed to .${extension} is still refused.`,
+      })
+    }
+  })
 
 /**
  * The body shared by sending and drafting.

@@ -62,9 +62,9 @@ check('prefix stripped, bytes intact', Buffer.from(pref.attachments[0].contentBy
 console.log('\n=== path components in a filename are stripped ===')
 const trav = sendMailSchema.parse({
   to: [{ address: 'a@b.com' }], subject: 's', html: '<p>x</p>',
-  attachments: [{ name: '../../etc/passwd', contentType: 'text/plain', contentBytes: 'eA==' }],
+  attachments: [{ name: '../../etc/passwd.pdf', contentType: 'application/pdf', contentBytes: FILES[0][2].toString('base64') }],
 })
-check('traversal stripped', trav.attachments[0].name === 'passwd', trav.attachments[0].name)
+check('traversal stripped', trav.attachments[0].name === 'passwd.pdf', trav.attachments[0].name)
 
 console.log('\n=== rejections ===')
 const rejects = (name, body) => {
@@ -93,6 +93,44 @@ check('table survives', bothGraph.body.content.includes('<table') && bothGraph.b
 check('variable survives', bothGraph.body.content.includes('{{reference}}'))
 check('script stripped', !bothGraph.body.content.includes('<script'))
 check('attachment still present', bothGraph.attachments.length === 1)
+
+console.log('\n=== Pass 2A: content must match the claimed format ===')
+
+// MZ - the DOS/PE header every Windows executable begins with.
+const EXE = Buffer.from([0x4d, 0x5a, 0x90, 0x00, 0x03, 0x00, 0x00, 0x00])
+const HTMLB = Buffer.from('<html><script>alert(1)</script></html>', 'utf8')
+const send = (file) => ({ to: [{ address: 'a@b.com' }], subject: 's', html: '<p>x</p>', attachments: [file] })
+
+const accepts = (label, file) => {
+  try { sendMailSchema.parse(send(file)); check(label, true, 'accepted') }
+  catch (error) { check(label, false, error.issues?.[0]?.message ?? error.message) }
+}
+const refuses = (label, file) => {
+  try { sendMailSchema.parse(send(file)); check(label, false, 'was ACCEPTED') }
+  catch { check(label, true, 'refused') }
+}
+
+for (const [fname, ctype, buf] of FILES) {
+  accepts('legitimate ' + fname, { name: fname, contentType: ctype, contentBytes: buf.toString('base64') })
+}
+accepts('browser said octet-stream for a real PDF', { name: 'x.pdf', contentType: 'application/octet-stream', contentBytes: FILES[0][2].toString('base64') })
+
+refuses('EXE bytes declared as PDF', { name: 'invoice.pdf', contentType: 'application/pdf', contentBytes: EXE.toString('base64') })
+refuses('EXE bytes declared as PNG', { name: 'logo.png', contentType: 'image/png', contentBytes: EXE.toString('base64') })
+refuses('EXE bytes declared as XLSX', { name: 'r.xlsx', contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', contentBytes: EXE.toString('base64') })
+refuses('HTML/script bytes declared as PDF', { name: 'doc.pdf', contentType: 'application/pdf', contentBytes: HTMLB.toString('base64') })
+refuses('mismatched extension and MIME', { name: 'a.pdf', contentType: 'image/png', contentBytes: FILES[0][2].toString('base64') })
+refuses('corrupted PDF signature', { name: 'a.pdf', contentType: 'application/pdf', contentBytes: Buffer.from('XPDF-1.7 broken').toString('base64') })
+refuses('corrupted PNG signature', { name: 'a.png', contentType: 'image/png', contentBytes: Buffer.from([0x89, 0x50, 0x4e, 0x00, 0x00]).toString('base64') })
+refuses('.exe extension outright', { name: 'setup.exe', contentType: 'application/octet-stream', contentBytes: EXE.toString('base64') })
+refuses('extensionless filename', { name: 'passwd', contentType: 'application/pdf', contentBytes: FILES[0][2].toString('base64') })
+
+console.log('\n=== hardening did not disturb the send payload ===')
+const still = sendMailSchema.parse(send({ name: 'Itinerary.pdf', contentType: 'application/pdf', contentBytes: FILES[0][2].toString('base64') }))
+const stillGraph = toGraphMessage({ ...still, bodyHtml: still.html })
+check('still a fileAttachment with intact bytes',
+  stillGraph.attachments[0]['@odata.type'] === '#microsoft.graph.fileAttachment' &&
+  Buffer.from(stillGraph.attachments[0].contentBytes, 'base64').equals(FILES[0][2]))
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

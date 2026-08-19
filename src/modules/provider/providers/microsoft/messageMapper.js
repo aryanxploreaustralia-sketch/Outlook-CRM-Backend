@@ -12,6 +12,7 @@
  */
 
 import { FOLDERS } from '../../constants/folderTypes.js'
+import { sanitizeEmailHtml } from '../../../../utils/emailHtml.js'
 
 /**
  * Graph `emailAddress` → `{ address, name }`.
@@ -144,7 +145,19 @@ export function toGraphMessage(message) {
     subject: message.subject ?? '',
     body: {
       contentType: 'HTML',
-      content: message.bodyHtml ?? message.html ?? '',
+      /*
+       * Sanitised here, and here is deliberate.
+       *
+       * This is the single point every outbound message passes through —
+       * compose, campaigns, the morning introduction, follow-ups — so one call
+       * covers all of them and no future send path can be added that bypasses
+       * it by forgetting to sanitise.
+       *
+       * It runs even for content already sanitised on save. Templates written
+       * before this existed are still in the database, and a body assembled at
+       * send time never went through a save at all.
+       */
+      content: sanitizeEmailHtml(message.bodyHtml ?? message.html ?? ''),
     },
     toRecipients: (message.to ?? []).map((recipient) => ({
       emailAddress: recipient.name

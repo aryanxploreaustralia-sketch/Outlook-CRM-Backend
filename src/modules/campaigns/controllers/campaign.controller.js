@@ -34,6 +34,7 @@ import { campaignAnalytics, overallAnalytics, recordTemplatePerformance } from '
 import { mailboxHealthSnapshot } from '../services/throttle.service.js'
 import { extractVariables } from '../services/personalisation.service.js'
 import { createSequenceStep } from '../services/replyDetection.service.js'
+import { sanitizeEmailHtml } from '../../../utils/emailHtml.js'
 
 const ownerOf = (req) => req.auth.user._id
 const objectId = z.string().regex(/^[0-9a-f]{24}$/i, 'That is not a valid id.')
@@ -67,7 +68,9 @@ const createSchema = z.object({
   description: z.string().trim().max(2000).optional().nullable(),
   template: objectId.optional().nullable(),
   subject: z.string().trim().max(998).optional(),
-  bodyHtml: z.string().max(500_000).optional(),
+  // Sanitised as it is parsed, so create and update are both covered and no
+  // handler can forget. See `utils/emailHtml.js`.
+  bodyHtml: z.string().max(500_000).transform(sanitizeEmailHtml).optional(),
   senderMailboxes: z.array(objectId).max(20).optional(),
   audience: audienceSchema.optional(),
   throttle: z
@@ -468,7 +471,11 @@ const templateSchema = z.object({
   description: z.string().trim().max(1000).optional().nullable(),
   category: z.enum(TEMPLATE_CATEGORY_VALUES).optional(),
   subject: z.string().trim().min(1, 'A template needs a subject.').max(998),
-  bodyHtml: z.string().min(1, 'A template needs a body.').max(500_000),
+  bodyHtml: z
+    .string()
+    .min(1, 'A template needs a body.')
+    .max(500_000)
+    .transform(sanitizeEmailHtml),
   bodyText: z.string().max(500_000).optional(),
   variables: z
     .array(

@@ -30,7 +30,9 @@
     "seed:leads": "node scripts/seed-leads.js",
     "backfill:companies": "node scripts/backfill-companies.js",
     "seed:conversations": "node scripts/seed-conversations.js",
-    "db:reset-business": "node scripts/reset-business-data.js"
+    "db:reset-business": "node scripts/reset-business-data.js",
+    "test:sanitizer": "node scripts/test-email-sanitizer.mjs",
+    "test:attachments": "node scripts/test-mail-attachments.mjs"
   },
   "keywords": [
     "outlook",
@@ -52,6 +54,7 @@
     "express-rate-limit": "^8.6.1",
     "helmet": "^8.3.0",
     "mongoose": "^9.8.1",
+    "sanitize-html": "^2.17.7",
     "winston": "^3.19.0",
     "winston-daily-rotate-file": "^5.0.0",
     "zod": "^4.4.3"

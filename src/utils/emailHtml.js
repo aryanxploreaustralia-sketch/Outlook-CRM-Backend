@@ -48,7 +48,11 @@ const STYLE_VALUES = Object.freeze({
   'text-align': [/^(left|right|center|justify)$/i],
   'vertical-align': [/^(top|middle|bottom|baseline)$/i],
   width: [/^\d+(\.\d+)?(px|pt|em|rem|%)?$/i],
-  height: [/^\d+(\.\d+)?(px|pt|em|rem|%)?$/i],
+  // Added for inserted images: without it a wide picture overflows the message
+  // column in every client. `auto` is permitted so `height:auto` can pair with it.
+  'max-width': [/^\d+(\.\d+)?(px|pt|em|rem|%)$/i, /^none$/i],
+  'max-height': [/^\d+(\.\d+)?(px|pt|em|rem|%)$/i, /^none$/i],
+  height: [/^\d+(\.\d+)?(px|pt|em|rem|%)?$/i, /^auto$/i],
   padding: [/^[\d\s.]+(px|pt|em|rem|%)?([\d\s.a-z%]+)?$/i],
   margin: [/^[\d\s.]+(px|pt|em|rem|%)?([\d\s.a-z%]+)?$/i],
   border: [/^[\w\s#(),.%-]+$/i],

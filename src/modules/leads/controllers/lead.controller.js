@@ -554,6 +554,76 @@ export const updateCompany = asyncHandler(async (req, res) => {
   return sendSuccess(res, { message: 'Company updated.', data: { company: company.toPublicJSON() } })
 })
 
+/**
+ * DELETE /api/v1/companies/:id
+ *
+ * Soft-deletes one company. `isDeleted: true` is the pattern every company
+ * query in this module already filters on, so the record leaves the register
+ * the moment this returns without anything else needing to know.
+ *
+ * ## Leads are deliberately untouched
+ *
+ * A `Lead` references its company by id. Deleting those leads would destroy
+ * the enquiry register — the thing the CRM exists for — because somebody tidied
+ * up a duplicate company row. Clearing the reference would silently detach
+ * history that is still true. So neither happens: the lead keeps pointing at a
+ * company that is no longer listed, exactly as a soft delete implies, and
+ * restoring the company restores the association intact.
+ */
+export const deleteCompany = asyncHandler(async (req, res) => {
+  const { id } = z.object({ id: objectId }).parse(req.params)
+
+  const company = await Company.findOne({ _id: id, owner: ownerOf(req), isDeleted: false })
+  if (!company) throw ApiError.notFound('No company with that id exists.')
+
+  company.isDeleted = true
+  await company.save()
+
+  return sendSuccess(res, {
+    message: `${company.companyName} was deleted.`,
+    data: { deleted: 1, id: String(company._id) },
+  })
+})
+
+/**
+ * DELETE /api/v1/companies
+ *
+ * Bulk delete. Either a list of ids, or `all: true` for the whole register.
+ *
+ * `all` operates on the database rather than on whatever the caller happened to
+ * have loaded — deleting "all" while showing page one of thirty and removing
+ * fifty rows is the kind of half-done destructive action nobody can tell has
+ * gone wrong until much later.
+ *
+ * The two are mutually exclusive at the schema, so a request cannot ask for
+ * both and leave the server to decide which was meant.
+ */
+export const deleteCompanies = asyncHandler(async (req, res) => {
+  const { ids, all } = z
+    .object({
+      ids: z.array(objectId).min(1).max(500).optional(),
+      all: z.literal(true).optional(),
+    })
+    .refine((value) => Boolean(value.all) !== Boolean(value.ids), {
+      message: 'Send either `ids` or `all: true`, not both and not neither.',
+    })
+    .parse(req.body ?? {})
+
+  // Always scoped to the caller's own register, exactly like every other
+  // company query here. `all` means all of *theirs*.
+  const filter = { owner: ownerOf(req), isDeleted: false }
+  // `all` widens to the whole register; otherwise only the named ids.
+  if (!all) filter._id = { $in: ids }
+
+  const result = await Company.updateMany(filter, { $set: { isDeleted: true } })
+  const deleted = result.modifiedCount ?? 0
+
+  return sendSuccess(res, {
+    message: `${deleted} company/companies deleted.`,
+    data: { deleted },
+  })
+})
+
 // ---------------------------------------------------------------------------
 // Workbook import
 // ---------------------------------------------------------------------------

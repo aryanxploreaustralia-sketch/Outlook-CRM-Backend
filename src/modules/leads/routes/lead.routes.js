@@ -155,4 +155,26 @@ companyRouter.get('/', controller.listCompanies)
 companyRouter.get('/:id', controller.getCompany)
 companyRouter.put('/:id', controller.updateCompany)
 
+/*
+ * Deletion is guarded; reading and editing are not.
+ *
+ * `companies.view` is the only company permission the matrix defines, and it is
+ * held by everybody who can open the CRM — gating a delete on it would let a
+ * viewer empty the register. Rather than invent a `companies.delete` that would
+ * have to be added to the matrix, granted per role and kept in step with
+ * `leads.delete` forever, this reuses `leads.delete`: the register's existing
+ * "may destroy records" capability, held by Owner, Admin and Manager and by
+ * nobody else. Leads and companies are one module, and this is one decision.
+ *
+ * The bulk route is registered before `/:id` so "all" or an ids payload can
+ * never be read as a company id.
+ */
+companyRouter.delete(
+  '/',
+  requirePermission(PERMISSIONS.LEADS_DELETE),
+  express.json({ limit: '64kb' }),
+  controller.deleteCompanies,
+)
+companyRouter.delete('/:id', requirePermission(PERMISSIONS.LEADS_DELETE), controller.deleteCompany)
+
 export default leadRouter

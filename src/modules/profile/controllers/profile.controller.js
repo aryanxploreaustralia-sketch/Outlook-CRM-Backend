@@ -27,6 +27,8 @@ import { recordAudit } from '../../audit/services/auditRecorder.service.js'
 import { respondWithPerformance } from '../../admin/controllers/admin.controller.js'
 import * as service from '../services/profile.service.js'
 import { resolveStoredPath } from '../services/documentStorage.service.js'
+import { signatureSchema } from '../validators/profile.validator.js'
+import { User } from '../../../models/user.model.js'
 import {
   documentDecisionSchema,
   documentUpdateSchema,
@@ -311,3 +313,39 @@ export default {
   rejectUserDocument,
   verifyUserDocument,
 }
+
+/**
+ * GET /api/v1/account/signature
+ *
+ * The caller's own signature. No permission beyond being signed in: it is the
+ * reader's own content and nobody else's is reachable through this route.
+ */
+export const getMySignature = asyncHandler(async (req, res) =>
+  sendSuccess(res, {
+    message: 'Signature loaded.',
+    // `?? ''` rather than a nullish body: an account created before this field
+    // existed has no value, and "no signature" is an empty one, not an error.
+    data: { signatureHtml: req.auth.user.signatureHtml ?? '' },
+  }),
+)
+
+/**
+ * PUT /api/v1/account/signature
+ *
+ * Replaces it. Sanitised by the schema on the way in — see
+ * `signatureSchema` — so nothing unchecked is ever written to the document.
+ */
+export const putMySignature = asyncHandler(async (req, res) => {
+  const { signatureHtml } = signatureSchema.parse(req.body)
+
+  const user = await User.findByIdAndUpdate(
+    req.auth.user._id,
+    { $set: { signatureHtml } },
+    { new: true },
+  ).select('signatureHtml')
+
+  return sendSuccess(res, {
+    message: signatureHtml === '' ? 'Signature cleared.' : 'Signature saved.',
+    data: { signatureHtml: user?.signatureHtml ?? '' },
+  })
+})

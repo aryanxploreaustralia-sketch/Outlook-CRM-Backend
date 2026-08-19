@@ -11,6 +11,7 @@
  */
 
 import { z } from 'zod'
+import { sanitizeEmailHtml } from '../../../utils/emailHtml.js'
 
 import {
   DOCUMENT_CATEGORY_VALUES,
@@ -143,3 +144,20 @@ export default {
   objectIdSchema,
   profileUpdateSchema,
 }
+
+/**
+ * Body for `PUT /v1/account/signature`.
+ *
+ * Sanitised in the schema rather than the handler, so the value the controller
+ * receives is already safe and there is no path where a future caller forgets.
+ * The same `sanitizeEmailHtml` the send pipeline uses — a second policy for
+ * signatures would be a second thing to keep in step.
+ *
+ * An empty string is legal: clearing the signature is an ordinary thing to do.
+ */
+export const signatureSchema = z.object({
+  signatureHtml: z
+    .string()
+    .max(20_000, 'A signature cannot exceed 20,000 characters.')
+    .transform(sanitizeEmailHtml),
+})

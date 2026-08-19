@@ -43,6 +43,14 @@ const rawUpload = express.raw({ type: () => true, limit: MAX_DOCUMENT_BYTES })
 router.get('/', controller.getMyProfile)
 router.patch('/', controller.patchMyProfile)
 
+/*
+ * The caller's email signature. Authenticated only, like the rest of this
+ * router — it reads and writes the requester's own document and cannot address
+ * anybody else's.
+ */
+router.get('/signature', controller.getMySignature)
+router.put('/signature', controller.putMySignature)
+
 // --- Photo -----------------------------------------------------------------
 // The literal path is registered before `/photo/:id` cannot shadow it.
 router.put('/photo', rawUpload, controller.putMyPhoto)

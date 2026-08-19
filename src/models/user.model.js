@@ -178,6 +178,16 @@ const userSchema = new Schema(
       trim: true,
       default: null,
     },
+    /**
+     * The user's email signature, as sanitised HTML.
+     *
+     * Empty by default, so every existing account reads as "no signature
+     * configured" without a migration. Written only through
+     * `PUT /v1/account/signature`, which sanitises with the same
+     * `sanitizeEmailHtml` the send path uses — storing raw HTML here would put
+     * unchecked markup one `insertHTML` away from a customer's inbox.
+     */
+    signatureHtml: { type: String, default: '' },
 
     displayName: {
       type: String,

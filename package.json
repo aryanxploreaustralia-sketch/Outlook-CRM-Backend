@@ -34,7 +34,8 @@
     "test:sanitizer": "node scripts/test-email-sanitizer.mjs",
     "test:attachments": "node scripts/test-mail-attachments.mjs",
     "test:signature": "node scripts/test-signature.mjs",
-    "test:import-recount": "node scripts/test-import-recount.mjs"
+    "test:import-recount": "node scripts/test-import-recount.mjs",
+    "test:profile-photo": "node scripts/test-profile-photo.mjs"
   },
   "keywords": [
     "outlook",

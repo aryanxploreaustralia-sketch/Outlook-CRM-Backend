@@ -57,7 +57,23 @@ export function profileDTO(user) {
     // --- Basic, mostly read-only ---
     displayName: user.displayName ?? null,
     email: user.email,
+    /*
+     * Whether a photo exists. Kept as a path for backward compatibility with
+     * any consumer reading it, but it is **not** usable as an `<img src>` on
+     * its own: it is relative, and this deployment serves the API from a
+     * different origin than the app, so the browser would resolve it against
+     * the front end and 404. The client builds the real URL from `id` with its
+     * own `apiUrl()` helper — the same way document downloads already work.
+     */
     profilePhoto: user.profilePhoto ? `/api/v1/profile/photo/${user._id}` : null,
+
+    /*
+     * Changes whenever the document is saved, which includes replacing the
+     * photo. The client appends it to the image URL so a new upload is fetched
+     * rather than served from the browser's cache — the URL is otherwise
+     * identical for the same user forever.
+     */
+    photoUpdatedAt: user.profilePhoto ? (user.updatedAt ?? null) : null,
     phone: user.phone ?? null,
     employeeId: user.employeeId ?? null,
     department: user.department ?? null,

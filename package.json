@@ -1,7 +1,7 @@
 {
   "name": "outlook-automation-crm-backend",
   "version": "1.0.0",
-  "description": "Express + MongoDB API for the Outlook Automation CRM.",
+  "description": "Express + MongoDB API for the Xplore Australia CRM.",
   "private": true,
   "type": "module",
   "main": "src/server.js",

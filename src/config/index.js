@@ -13,7 +13,7 @@ import { env, isAuthConfigured, isGoogleAuthConfigured, ROOT_DIR } from './env.j
 
 /** Package metadata, kept in one place for health responses and log context. */
 const APP = {
-  name: 'outlook-automation-crm-api',
+  name: 'Xplore Australia CRM',
   version: '1.0.0',
 }
 

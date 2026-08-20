@@ -29,6 +29,8 @@ import * as service from '../services/profile.service.js'
 import { resolveStoredPath } from '../services/documentStorage.service.js'
 import { signatureSchema } from '../validators/profile.validator.js'
 import { User } from '../../../models/user.model.js'
+import { access } from 'node:fs/promises'
+import { constants as fsConstants } from 'node:fs'
 import {
   documentDecisionSchema,
   documentUpdateSchema,
@@ -127,12 +129,39 @@ export const getPhoto = asyncHandler(async (req, res) => {
 
   const absolute = resolveStoredPath(user.profilePhoto)
 
+  /*
+   * Existence is checked before a single header is written.
+   *
+   * `createReadStream(...).pipe(res)` used to run unconditionally. When the file
+   * was gone — a redeploy that replaced the app directory, a row written by an
+   * older build — the stream emitted `error` with nothing listening, *after*
+   * `Content-Type` had already been sent. The client received a truncated
+   * response rather than a status it could act on, which an `<img>` reports
+   * only as a generic load failure. Checking first turns that into an honest
+   * 404 that shows up plainly in the network log.
+   */
+  try {
+    await access(absolute, fsConstants.R_OK)
+  } catch {
+    throw ApiError.notFound('That profile photo is no longer stored on this server.', {
+      code: 'PHOTO_FILE_MISSING',
+    })
+  }
+
   res.setHeader('Content-Type', user.profilePhoto.endsWith('.png') ? 'image/png' : 'image/jpeg')
   // Private: an avatar is not secret, but it is not public either, and a shared
   // cache should not hold it.
   res.setHeader('Cache-Control', 'private, max-age=300')
 
-  return createReadStream(absolute).pipe(res)
+  const stream = createReadStream(absolute)
+
+  /*
+   * A late read failure cannot become a response any more — headers are out —
+   * so the socket is closed rather than left hanging for the browser's timeout.
+   */
+  stream.on('error', () => res.destroy())
+
+  return stream.pipe(res)
 })
 
 /**

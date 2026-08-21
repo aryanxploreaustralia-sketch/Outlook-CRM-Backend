@@ -123,6 +123,8 @@ function toRow(lead, now, ownerName) {
     email: lead.email ?? null,
     owner: ownerName ?? null,
     market: lead.market ?? null,
+    /** The workbook's `Remark` column, for deciding whether to chase. */
+    remarks: lead.internalNotes ?? null,
     marketLabel: MARKET_LABELS[lead.market] ?? lead.market ?? null,
     stage: lead.stage,
     stageLabel: LEAD_STAGE_LABELS[lead.stage] ?? lead.stage,
@@ -229,7 +231,7 @@ export async function listFollowUpCandidates(query = {}) {
   const [rows, total, eligible, replied, followedUp] = await Promise.all([
     Lead.find(filter)
       .select(
-        'reference contactPerson companyName email market stage owner replyReceived lastReplyAt autoMail followUp',
+        'reference contactPerson companyName email market stage owner internalNotes replyReceived lastReplyAt autoMail followUp',
       )
       // Longest wait first: the enquiry closest to going cold is the one that
       // most needs a decision, and it is why the page was opened.

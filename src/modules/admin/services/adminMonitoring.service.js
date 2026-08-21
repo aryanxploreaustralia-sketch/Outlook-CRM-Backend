@@ -318,7 +318,7 @@ export async function listAdminLeads(query = {}) {
   const [leads, total, unassigned, stale, won] = await Promise.all([
     Lead.find(filter)
       .select(
-        'reference contactPerson companyName email stage market owner travelDate travelDateText createdAt updatedAt autoMail.status',
+        'reference contactPerson companyName email stage market owner travelDate travelDateText internalNotes createdAt updatedAt autoMail.status',
       )
       .sort({ createdAt: -1 })
       .skip((page - 1) * limit)
@@ -369,6 +369,8 @@ export async function listAdminLeads(query = {}) {
        */
       travelDate: lead.travelDate ?? null,
       travelDateText: lead.travelDateText ?? null,
+      /** The workbook's `Remark` column. Truncated by the tables that show it. */
+      remarks: lead.internalNotes ?? null,
       assignedTo: owners.get(String(lead.owner)) ?? null,
       /** The owner's id. Same reasoning as `ownerId` on the campaign row above. */
       assignedToId: lead.owner ? String(lead.owner) : null,

@@ -391,6 +391,14 @@ leadSchema.methods.toSummaryJSON = function toSummaryJSON() {
     stage: this.stage,
     stageLabel: LEAD_STAGE_LABELS[this.stage] ?? this.stage,
     handledBy: this.handledBy,
+    /*
+     * The workbook's `Remark` column, on the list shape as well as the detail.
+     *
+     * Internal-only, and this changes no trust boundary: every consumer of this
+     * DTO is authenticated and owner-scoped, and already receives the same field
+     * from `toPublicJSON` when the enquiry is opened. Listings truncate it.
+     */
+    internalNotes: this.internalNotes,
     campaignEligible: this.isCampaignEligible(),
     doNotContact: this.doNotContact,
     ageInDays: this.ageInDays(),

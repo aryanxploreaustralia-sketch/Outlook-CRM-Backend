@@ -36,7 +36,8 @@
     "test:signature": "node scripts/test-signature.mjs",
     "test:import-recount": "node scripts/test-import-recount.mjs",
     "test:profile-photo": "node scripts/test-profile-photo.mjs",
-    "test:follow-up-ageing": "node scripts/test-follow-up-ageing.mjs"
+    "test:follow-up-ageing": "node scripts/test-follow-up-ageing.mjs",
+    "test:lead-edit-access": "node scripts/test-lead-edit-access.mjs"
   },
   "keywords": [
     "outlook",

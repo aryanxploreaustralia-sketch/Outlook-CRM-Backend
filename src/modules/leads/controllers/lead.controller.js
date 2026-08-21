@@ -15,6 +15,7 @@ import { recordAudit } from '../../audit/services/auditRecorder.service.js'
 import { Company } from '../../../models/company.model.js'
 import { Contact } from '../../../models/contact.model.js'
 import { Lead } from '../../../models/lead.model.js'
+import { ROLES } from '../../../constants/roles.js'
 import { fromXlsx, listSheets } from '../../contacts/utils/xlsx.js'
 import { detectFormat } from '../../import/parsers/index.js'
 import { IMPORT_STATUS, IMPORT_STEP } from '../../import/constants/importConstants.js'
@@ -111,11 +112,50 @@ const importSchema = z.object({
 })
 
 /** Loads a lead the caller owns, or 404s. */
-async function loadLead(req) {
+/**
+ * May this caller reach an enquiry that is not theirs?
+ *
+ * The organization owner, and nobody else.
+ *
+ * Deliberately **not** `hasPermission(req, LEADS_EDIT)`. Several roles hold
+ * `leads.edit`, and in an owner-scoped register it has only ever meant "may
+ * edit leads" — meaning their own. Reading it as "may edit anyone's" would
+ * silently hand every manager and member cross-user write access to the whole
+ * register, which is an escalation nobody asked for. The cross-user path that
+ * already exists is the admin console, which carries its own guards.
+ */
+function canReachAnyLead(req) {
+  return req.auth?.user?.role === ROLES.OWNER
+}
+
+/**
+ * Loads one enquiry, or 404s.
+ *
+ * 404 rather than 403 throughout: distinguishing them would confirm that an id
+ * exists, which is the IDOR probe this scoping exists to defeat.
+ *
+ * `anyOwner` widens the scope to the whole register **for the organization
+ * owner only**, and is passed by the two handlers that read and edit. Deletion
+ * deliberately does not pass it: removing another person's enquiry is the
+ * console's job, where `leads.delete` is checked, and widening it here would be
+ * a change to destructive behaviour nobody asked for.
+ */
+async function loadLead(req, { anyOwner = false } = {}) {
   const { id } = z.object({ id: objectId }).parse(req.params)
-  const lead = await Lead.findOne({ _id: id, owner: ownerOf(req), isDeleted: false })
+
+  const scope =
+    anyOwner && canReachAnyLead(req)
+      ? { _id: id, isDeleted: false }
+      : { _id: id, owner: ownerOf(req), isDeleted: false }
+
+  const lead = await Lead.findOne(scope)
   if (!lead) throw ApiError.notFound('No lead with that id exists.')
   return lead
+}
+
+/** Whether this caller may edit this enquiry. The button and the guard agree. */
+function canEditLead(req, lead) {
+  return String(lead.owner) === String(ownerOf(req)) || canReachAnyLead(req)
 }
 
 // ---------------------------------------------------------------------------
@@ -367,7 +407,7 @@ export const audience = asyncHandler(async (req, res) => {
 
 /** GET /api/v1/leads/:id */
 export const getById = asyncHandler(async (req, res) => {
-  const lead = await loadLead(req)
+  const lead = await loadLead(req, { anyOwner: true })
 
   const [company, contact] = await Promise.all([
     lead.company ? Company.findById(lead.company) : null,
@@ -380,13 +420,20 @@ export const getById = asyncHandler(async (req, res) => {
       lead: lead.toPublicJSON(),
       company: company?.toPublicJSON() ?? null,
       contact: contact?.toPublicJSON() ?? null,
+      /*
+       * The server's own answer to "may I edit this?", so the Edit control is
+       * rendered from the same rule the update endpoint enforces rather than
+       * from the client's guess at it. The guard is still the guard — this
+       * only stops the UI offering something the API would refuse.
+       */
+      canEdit: canEditLead(req, lead),
     },
   })
 })
 
 /** PUT /api/v1/leads/:id */
 export const update = asyncHandler(async (req, res) => {
-  const lead = await loadLead(req)
+  const lead = await loadLead(req, { anyOwner: true })
   const data = updateLeadSchema.parse(req.body)
 
   if (data.stage && data.stage !== lead.stage) {
@@ -408,7 +455,16 @@ export const update = asyncHandler(async (req, res) => {
     summary: `Updated the enquiry ${lead.reference}`,
     target: { id: String(lead._id), name: lead.reference },
     refs: { leadId: lead._id },
-    metadata: { changedFields: Object.keys(data), stage: lead.stage ?? null },
+    metadata: {
+      changedFields: Object.keys(data),
+      stage: lead.stage ?? null,
+      /*
+       * Recorded only when somebody edits an enquiry that is not theirs, which
+       * today means the organization owner. An unowned edit should be findable
+       * in the log without reading every LEAD_UPDATED entry.
+       */
+      onBehalfOfOwner: String(lead.owner) === String(ownerOf(req)) ? undefined : String(lead.owner),
+    },
   })
 
   return sendSuccess(res, { message: 'Lead updated.', data: { lead: lead.toPublicJSON() } })

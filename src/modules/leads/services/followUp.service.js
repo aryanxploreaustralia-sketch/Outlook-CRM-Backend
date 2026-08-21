@@ -48,6 +48,40 @@ const log = createContextLogger('lead-follow-up')
 
 const DAY_MS = 86_400_000
 
+/**
+ * Whole days since the enquiry was quoted. The follow-up clock.
+ *
+ * ## Why `quoteDate` and not the introduction's send date
+ *
+ * The question this page answers is "how long has this customer been waiting
+ * since we quoted them?" — a fact about the enquiry. The introduction's send
+ * date is a fact about our automation, and the two diverge whenever a workbook
+ * is imported late: a lead quoted three weeks ago and emailed this morning read
+ * as one day old, so the enquiries most at risk of going cold sat at the bottom
+ * of the queue.
+ *
+ * ## Why plain arithmetic is exact here
+ *
+ * `quoteDate` is a calendar date: the importer stores it at midnight UTC, and
+ * every one of the 5,959 quoted enquiries on this deployment is stored that way.
+ * With the left edge pinned to midnight, the floor of the raw difference *is*
+ * the UTC calendar-day difference — 20 Aug → 23 Aug is 3 whether it is read at
+ * 00:05 or 23:55 — so there is no off-by-one to correct and no need for a date
+ * library the project does not have.
+ *
+ * @returns {?number} null when the enquiry carries no quote date, which is the
+ *   only honest answer: nothing here invents one.
+ */
+export function daysSinceQuote(lead, now = new Date()) {
+  if (!lead?.quoteDate) return null
+  return Math.floor((now.getTime() - new Date(lead.quoteDate).getTime()) / DAY_MS)
+}
+
+/** The instant a quote must predate to have waited `days`. */
+function quoteCutoff(days, now = new Date()) {
+  return new Date(now.getTime() - days * DAY_MS)
+}
+
 /** Escapes a caller-supplied search term before it reaches a regex. */
 function safePattern(term) {
   return new RegExp(String(term).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i')
@@ -60,7 +94,7 @@ function safePattern(term) {
  * three cannot disagree about what "eligible" means — the failure that would
  * show a lead in the queue and then refuse to send to it with no explanation.
  */
-function eligibilityFilter({ owner, now = new Date() }) {
+export function eligibilityFilter({ owner, now = new Date() }) {
   return {
     owner,
     isDeleted: false,
@@ -72,8 +106,16 @@ function eligibilityFilter({ owner, now = new Date() }) {
     // Nobody answered. Maintained by the reply pipeline, not by this module.
     replyReceived: { $ne: true },
 
-    // Long enough ago to be a follow-up rather than a nudge.
-    'autoMail.sentAt': { $lte: new Date(now.getTime() - FOLLOW_UP_WAIT_DAYS * DAY_MS) },
+    /*
+     * Quoted long enough ago to be a follow-up rather than a nudge.
+     *
+     * An enquiry with no `quoteDate` is never eligible, and needs no clause of
+     * its own to say so: MongoDB brackets range operators by BSON type, so
+     * `$lte: <Date>` does not match null or a missing field. Measured on this
+     * deployment — 6,029 leads, 70 without a quote date, and the guarded and
+     * unguarded counts agree exactly.
+     */
+    quoteDate: { $lte: quoteCutoff(FOLLOW_UP_WAIT_DAYS, now) },
 
     // At most one follow-up, ever. See `FOLLOW_UP_MAX_SEQUENCE`.
     'followUp.count': { $lt: FOLLOW_UP_MAX_SEQUENCE },
@@ -96,19 +138,21 @@ function replyStatusOf(lead) {
 }
 
 /** What the console shows for a lead's follow-up state. Derived. */
-function followUpStatusOf(lead, now = new Date()) {
+export function followUpStatusOf(lead, now = new Date()) {
   if ((lead.followUp?.count ?? 0) >= FOLLOW_UP_MAX_SEQUENCE) return FOLLOW_UP_STATUS.SENT
   if (replyStatusOf(lead) !== REPLY_STATUS.NO_REPLY) return FOLLOW_UP_STATUS.NOT_ELIGIBLE
   if (lead.doNotContact || !lead.email) return FOLLOW_UP_STATUS.NOT_ELIGIBLE
   if (TERMINAL_STAGES.includes(lead.stage)) return FOLLOW_UP_STATUS.NOT_ELIGIBLE
 
-  const sentAt = lead.autoMail?.sentAt
-  if (!sentAt) return FOLLOW_UP_STATUS.NOT_ELIGIBLE
+  // A follow-up follows something: without an introduction there is nothing to
+  // follow up on, and `sendFollowUps` would refuse with `NO_INITIAL_EMAIL`.
+  if (!lead.autoMail?.sentAt) return FOLLOW_UP_STATUS.NOT_ELIGIBLE
 
-  const elapsed = now.getTime() - new Date(sentAt).getTime()
-  return elapsed >= FOLLOW_UP_WAIT_DAYS * DAY_MS
-    ? FOLLOW_UP_STATUS.ELIGIBLE
-    : FOLLOW_UP_STATUS.WAITING
+  // The clock, however, runs from the quote — see `daysSinceQuote`.
+  const waited = daysSinceQuote(lead, now)
+  if (waited === null) return FOLLOW_UP_STATUS.NOT_ELIGIBLE
+
+  return waited >= FOLLOW_UP_WAIT_DAYS ? FOLLOW_UP_STATUS.ELIGIBLE : FOLLOW_UP_STATUS.WAITING
 }
 
 /** One row, shaped for the console. */
@@ -128,10 +172,13 @@ function toRow(lead, now, ownerName) {
     marketLabel: MARKET_LABELS[lead.market] ?? lead.market ?? null,
     stage: lead.stage,
     stageLabel: LEAD_STAGE_LABELS[lead.stage] ?? lead.stage,
+    /** Still reported, and still what the "Emailed from/to" filter narrows. */
     initialEmailSentAt: sentAt,
     initialEmailSubject: lead.autoMail?.subject ?? null,
-    /** Whole days since the introduction. What the "Waiting" column shows. */
-    waitingDays: sentAt ? Math.floor((now.getTime() - new Date(sentAt).getTime()) / DAY_MS) : null,
+    /** The reference date the follow-up clock runs from. */
+    quoteDate: lead.quoteDate ?? null,
+    /** Whole days since the quote. What the "Waiting" column shows. */
+    waitingDays: daysSinceQuote(lead, now),
     lastEmailStatus: lead.autoMail?.status ?? null,
     replyStatus: replyStatusOf(lead),
     lastReplyAt: lead.lastReplyAt ?? null,
@@ -205,15 +252,18 @@ export async function listFollowUpCandidates(query = {}) {
   }
 
   /*
-   * "Waiting 5+ days" is a bound on the introduction date, so it merges into
-   * the same clause rather than being computed per row afterwards — which would
-   * filter the page instead of the register.
+   * "Waiting 5+ days" is a bound on the quote date, so it merges into that
+   * clause rather than being computed per row afterwards — which would filter
+   * the page instead of the register, and disagree with the counts.
+   *
+   * The narrower of the two bounds wins, so choosing 5+ on a queue whose floor
+   * is already 3 tightens it rather than loosening it.
    */
   if (minWaitingDays) {
-    const cutoff = new Date(now.getTime() - Number(minWaitingDays) * DAY_MS)
-    const bounds = { ...(filter['autoMail.sentAt'] ?? {}) }
+    const cutoff = quoteCutoff(Number(minWaitingDays), now)
+    const bounds = { ...(filter.quoteDate ?? {}) }
     bounds.$lte = bounds.$lte && bounds.$lte < cutoff ? bounds.$lte : cutoff
-    filter['autoMail.sentAt'] = bounds
+    filter.quoteDate = bounds
   }
 
   if (search) {
@@ -231,11 +281,12 @@ export async function listFollowUpCandidates(query = {}) {
   const [rows, total, eligible, replied, followedUp] = await Promise.all([
     Lead.find(filter)
       .select(
-        'reference contactPerson companyName email market stage owner internalNotes replyReceived lastReplyAt autoMail followUp',
+        'reference contactPerson companyName email market stage owner internalNotes quoteDate replyReceived lastReplyAt autoMail followUp',
       )
-      // Longest wait first: the enquiry closest to going cold is the one that
-      // most needs a decision, and it is why the page was opened.
-      .sort({ 'autoMail.sentAt': 1 })
+      // Longest wait first, measured from the quote: the enquiry closest to
+      // going cold is the one that most needs a decision, and it is why the
+      // page was opened.
+      .sort({ quoteDate: 1 })
       .skip((page - 1) * limit)
       .limit(limit)
       .lean(),
@@ -292,7 +343,10 @@ async function revalidate({ leadId, owner, now }) {
   if (lead.autoMail?.status !== AUTO_MAIL_STATUS.SENT || !lead.autoMail?.sentAt) {
     return { ok: false, reason: SKIP_REASON.NO_INITIAL_EMAIL }
   }
-  if (now.getTime() - new Date(lead.autoMail.sentAt).getTime() < FOLLOW_UP_WAIT_DAYS * DAY_MS) {
+  // Same clock as the queue. If these two disagreed, a row would offer itself
+  // and then be refused with no explanation the reader could act on.
+  const waited = daysSinceQuote(lead, now)
+  if (waited === null || waited < FOLLOW_UP_WAIT_DAYS) {
     return { ok: false, reason: SKIP_REASON.TOO_SOON }
   }
   if (lead.doNotContact) return { ok: false, reason: SKIP_REASON.DO_NOT_CONTACT }

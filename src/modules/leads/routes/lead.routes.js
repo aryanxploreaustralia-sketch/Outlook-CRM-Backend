@@ -143,6 +143,15 @@ leadRouter.post('/', controller.create)
 
 leadRouter.get('/:id', controller.getById)
 leadRouter.put('/:id', controller.update)
+
+/*
+ * The whole record — enquiry, contact and company — in one save.
+ *
+ * Two path segments, so it can never be read as the single-field `PUT /:id`
+ * above. Same guard: the handler loads the enquiry through `loadLead`, and the
+ * contact and company ids come off that document rather than out of the body.
+ */
+leadRouter.put('/:id/full', controller.updateFull)
 leadRouter.delete('/:id', controller.remove)
 
 // ---------------------------------------------------------------------------

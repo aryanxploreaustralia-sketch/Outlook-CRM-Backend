@@ -16,6 +16,7 @@ import { Company } from '../../../models/company.model.js'
 import { Contact } from '../../../models/contact.model.js'
 import { Lead } from '../../../models/lead.model.js'
 import { ROLES } from '../../../constants/roles.js'
+import { updateContactSchema } from '../../contacts/validators/contact.validator.js'
 import { fromXlsx, listSheets } from '../../contacts/utils/xlsx.js'
 import { detectFormat } from '../../import/parsers/index.js'
 import { IMPORT_STATUS, IMPORT_STEP } from '../../import/constants/importConstants.js'
@@ -95,6 +96,25 @@ const companyUpdateSchema = z.object({
   status: z.enum(COMPANY_STATUS_VALUES).optional(),
   notes: z.string().trim().max(2000).nullable().optional(),
 })
+
+/**
+ * The composite edit.
+ *
+ * Every section is optional and each reuses the validator that already governs
+ * that record, so a rule lives in one place: `updateLeadSchema` here,
+ * `updateContactSchema` in the contacts module, `companyUpdateSchema` above.
+ * There is deliberately no `owner` key in any of them — reassignment is not
+ * something this endpoint does.
+ */
+const fullUpdateSchema = z
+  .object({
+    lead: updateLeadSchema.optional(),
+    contact: updateContactSchema.optional(),
+    company: companyUpdateSchema.optional(),
+  })
+  .refine((data) => data.lead ?? data.contact ?? data.company, {
+    message: 'Provide at least one section to update.',
+  })
 
 const mappingSchema = z.array(
   z.object({
@@ -427,6 +447,142 @@ export const getById = asyncHandler(async (req, res) => {
        * only stops the UI offering something the API would refuse.
        */
       canEdit: canEditLead(req, lead),
+    },
+  })
+})
+
+
+/**
+ * The whole record in one save: the enquiry, its contact and its company.
+ *
+ * ## Why one endpoint rather than three calls from the client
+ *
+ * Three calls cannot report a partial outcome. If the contact saved and the
+ * company did not, the browser has already told somebody "saved" twice and has
+ * no way to say which half is now on disk. Doing it here means one
+ * authorization, one validation pass, and one honest answer.
+ *
+ * ## Why the ids are not in the request body
+ *
+ * They are read off the enquiry. A caller who may edit this lead may edit *its*
+ * contact and *its* company and nothing else — passing ids would turn a lead
+ * they own into a lever on records they do not, which is the exact IDOR this
+ * shape forecloses. Both linked documents are additionally re-loaded under the
+ * enquiry owner's scope, so a stale link to somebody else's record cannot be
+ * written through either.
+ *
+ * ## Atomicity
+ *
+ * This deployment uses no transactions, and introducing a replica-set
+ * requirement for one form would be a far larger change than the feature.
+ * Instead: everything is validated and every document is loaded *before*
+ * anything is written, which removes the realistic failure — a request that was
+ * never going to be valid, discovered halfway through. A write that still fails
+ * mid-sequence reports exactly which parts were applied rather than claiming
+ * success.
+ */
+export const updateFull = asyncHandler(async (req, res) => {
+  // Validate first, and all of it. Nothing is loaded or written until the whole
+  // payload is known to be acceptable.
+  const payload = fullUpdateSchema.parse(req.body)
+
+  const lead = await loadLead(req, { anyOwner: true })
+
+  /*
+   * The linked records, scoped to the *enquiry's* owner rather than the
+   * caller's — that is what lets the organization owner edit another person's
+   * company without widening the query to every company in the deployment.
+   */
+  const [contact, company] = await Promise.all([
+    payload.contact && lead.contact
+      ? Contact.findOne({ _id: lead.contact, owner: lead.owner })
+      : null,
+    payload.company && lead.company
+      ? Company.findOne({ _id: lead.company, owner: lead.owner, isDeleted: false })
+      : null,
+  ])
+
+  // Refuse before mutating anything, rather than saving the enquiry and then
+  // discovering the company edit cannot be applied.
+  if (payload.contact && !contact) {
+    throw ApiError.notFound('This enquiry has no contact record to update.')
+  }
+  if (payload.company && !company) {
+    throw ApiError.notFound('This enquiry has no company record to update.')
+  }
+
+  // --- apply, in memory ----------------------------------------------------
+  if (payload.lead) {
+    const data = payload.lead
+
+    if (data.stage && data.stage !== lead.stage) {
+      lead.moveToStage(data.stage, { by: ownerOf(req), reason: data.stageReason ?? 'Changed in the CRM' })
+    }
+
+    for (const field of [
+      'handledBy', 'internalNotes', 'travelDate', 'travelDateText',
+      'city', 'paxText', 'adultCount', 'childCount', 'doNotContact',
+    ]) {
+      if (data[field] !== undefined) lead[field] = data[field]
+    }
+  }
+
+  if (payload.contact) {
+    for (const [field, value] of Object.entries(payload.contact)) contact[field] = value
+    contact.updatedBy = ownerOf(req)
+  }
+
+  if (payload.company) {
+    for (const [field, value] of Object.entries(payload.company)) company[field] = value
+  }
+
+  // --- write ---------------------------------------------------------------
+  const applied = []
+  try {
+    if (payload.lead) {
+      await lead.save()
+      applied.push('lead')
+    }
+    if (payload.contact) {
+      await contact.save()
+      applied.push('contact')
+    }
+    if (payload.company) {
+      await company.save()
+      applied.push('company')
+    }
+  } catch (error) {
+    /*
+     * Never report success for a save that did not happen. The message names
+     * what reached the database so the reader knows what to re-enter, rather
+     * than being told "something went wrong" about a form they have half saved.
+     */
+    const saved = applied.length > 0 ? `Saved: ${applied.join(', ')}.` : 'Nothing was saved.'
+    throw ApiError.badRequest(`${error.message} ${saved}`.trim())
+  }
+
+  await recordAudit({
+    req,
+    event: 'LEAD_UPDATED',
+    summary: `Updated the enquiry ${lead.reference}`,
+    target: { id: String(lead._id), name: lead.reference },
+    refs: { leadId: lead._id },
+    metadata: {
+      changedFields: Object.keys(payload.lead ?? {}),
+      /** Which related records this one save also touched. */
+      alsoUpdated: applied.filter((part) => part !== 'lead'),
+      stage: lead.stage ?? null,
+      onBehalfOfOwner: String(lead.owner) === String(ownerOf(req)) ? undefined : String(lead.owner),
+    },
+  })
+
+  return sendSuccess(res, {
+    message: 'Enquiry updated.',
+    data: {
+      lead: lead.toPublicJSON(),
+      contact: contact ? contact.toPublicJSON() : null,
+      company: company ? company.toPublicJSON() : null,
+      updated: applied,
     },
   })
 })

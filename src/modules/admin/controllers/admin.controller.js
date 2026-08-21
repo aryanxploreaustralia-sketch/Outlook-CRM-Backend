@@ -20,7 +20,7 @@ import {
   PERMISSION_GROUPS,
   PERMISSION_LABELS,
 } from '../../../constants/permissions.js'
-import { ROLE_LABELS } from '../../../constants/roles.js'
+import { ROLE_LABELS, ROLES } from '../../../constants/roles.js'
 import {
   buildRoleMatrix,
   permissionListForRole,
@@ -950,10 +950,22 @@ export const getAdminCampaigns = asyncHandler(async (req, res) => {
  */
 export const getAdminLeadDetail = asyncHandler(async (req, res) => {
   const id = objectIdSchema.parse(req.params.id)
+  const detail = await loadAdminLeadDetail(id)
+
+  /*
+   * The same question the CRM's own detail answers, decided by the same rule:
+   * the enquiry's owner, or the organization owner. Computed here rather than
+   * in the service because it is a fact about the caller, not about the record
+   * — and the console must not offer an Edit that `PUT /v1/leads/:id/full`
+   * would then refuse.
+   */
+  const viewerId = String(req.auth?.user?._id ?? '')
+  const canEdit =
+    viewerId === String(detail.owner?.id ?? '') || req.auth?.user?.role === ROLES.OWNER
 
   return sendSuccess(res, {
     message: 'Enquiry loaded.',
-    data: await loadAdminLeadDetail(id),
+    data: { ...detail, canEdit },
   })
 })
 

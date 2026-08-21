@@ -317,7 +317,9 @@ export async function listAdminLeads(query = {}) {
    */
   const [leads, total, unassigned, stale, won] = await Promise.all([
     Lead.find(filter)
-      .select('reference contactPerson companyName email stage market owner createdAt updatedAt autoMail.status')
+      .select(
+        'reference contactPerson companyName email stage market owner travelDate travelDateText createdAt updatedAt autoMail.status',
+      )
       .sort({ createdAt: -1 })
       .skip((page - 1) * limit)
       .limit(limit)
@@ -359,6 +361,14 @@ export async function listAdminLeads(query = {}) {
       stage: lead.stage,
       stageLabel: LEAD_STAGE_LABELS[lead.stage] ?? lead.stage,
       market: lead.market ?? null,
+      /*
+       * The enquiry's operative date, and what the console's lead tables lead
+       * with. `travelDateText` carries the prose the workbook sometimes holds
+       * instead ("August"); the row sends both so the client can show what the
+       * sheet actually said rather than inventing a date for it.
+       */
+      travelDate: lead.travelDate ?? null,
+      travelDateText: lead.travelDateText ?? null,
       assignedTo: owners.get(String(lead.owner)) ?? null,
       /** The owner's id. Same reasoning as `ownerId` on the campaign row above. */
       assignedToId: lead.owner ? String(lead.owner) : null,

@@ -201,7 +201,7 @@ export async function listAdminLeads(query = {}) {
     search,
     attention,
     owner,
-    dateField = 'createdAt',
+    dateField = 'travelDate',
     preset,
     from,
     to,

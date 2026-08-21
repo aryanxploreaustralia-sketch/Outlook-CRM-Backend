@@ -146,7 +146,7 @@ export const adminLeadQuerySchema = z.object({
    * offered as "last activity" for the same reason the column is — it is the
    * record's last modification, which the page states rather than implies.
    */
-  dateField: z.enum(['createdAt', 'quoteDate', 'updatedAt', 'travelDate']).default('createdAt'),
+  dateField: z.enum(['createdAt', 'quoteDate', 'updatedAt', 'travelDate']).default('travelDate'),
   preset: z.enum(DATE_PRESETS).optional(),
   from: isoDate,
   to: isoDate,

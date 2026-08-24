@@ -15,6 +15,7 @@ import {
   LEAD_STAGE,
   LEAD_STAGE_LABELS,
   LEAD_STAGE_ORDER,
+  DEFAULT_MARKET,
   MARKET,
   SHEET_STATUS_TO_STAGE,
 } from '../constants/leadConstants.js'
@@ -229,12 +230,19 @@ export function deriveMarket({ sheetName = '', reference = '' }) {
   const sheet = String(sheetName).toUpperCase()
   if (/\bNZ\b|NEW ZEALAND/.test(sheet)) return MARKET.NZ
   if (/\bAU\b|AUSTRALIA/.test(sheet)) return MARKET.AU
+  if (/\bFJ\b|FIJI/.test(sheet)) return MARKET.FJ
 
   const ref = String(reference).toUpperCase()
   if (/^XN/.test(ref)) return MARKET.NZ
   if (/^XA/.test(ref)) return MARKET.AU
+  if (/^XF/.test(ref)) return MARKET.FJ
 
-  return MARKET.OTHER
+  /*
+   * Neither the sheet nor the reference says. This used to be `OTHER`; with
+   * that category gone the enquiry is filed under the dominant destination
+   * rather than invented as Fiji, which would be a guess dressed as a fact.
+   */
+  return DEFAULT_MARKET
 }
 
 /** Splits a written name into first and last. */

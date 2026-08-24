@@ -33,7 +33,12 @@
 import { Lead } from '../../../models/lead.model.js'
 import { ApiError } from '../../../utils/ApiError.js'
 import { createContextLogger } from '../../../utils/logger.js'
-import { LEAD_FIELD, LEAD_STAGE, MARKET, MARKET_VALUES } from '../constants/leadConstants.js'
+import {
+  DEFAULT_MARKET,
+  LEAD_FIELD,
+  LEAD_STAGE,
+  MARKET_VALUES,
+} from '../constants/leadConstants.js'
 import { AUTO_MAIL_STATUS, SKIP_REASON } from '../constants/syncConstants.js'
 import { markSkipped, screenForAutoMail, sendIntroduction } from './autoMail.service.js'
 import { createResolver } from './companyResolver.service.js'
@@ -135,7 +140,7 @@ export async function createLeadManually({
    * reference here because `validateLeadRow` already does exactly that, and
    * doing it twice in two places is how the two answers start disagreeing.
    */
-  const requestedMarket = MARKET_VALUES.includes(form.market) ? form.market : MARKET.OTHER
+  const requestedMarket = MARKET_VALUES.includes(form.market) ? form.market : DEFAULT_MARKET
 
   if (supplied && (await referenceExists({ owner, reference: supplied }))) {
     throw ApiError.conflict(
@@ -339,7 +344,7 @@ export async function checkReference({ owner, reference }) {
 }
 
 /** The next reference this workspace would allocate, for the form's placeholder. */
-export async function peekNextReference({ owner, market = MARKET.OTHER }) {
+export async function peekNextReference({ owner, market = DEFAULT_MARKET }) {
   return nextReference({ owner, market })
 }
 

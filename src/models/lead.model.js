@@ -27,7 +27,7 @@ import {
   LEAD_STAGE,
   LEAD_STAGE_LABELS,
   LEAD_STAGE_VALUES,
-  MARKET,
+  DEFAULT_MARKET,
   MARKET_VALUES,
   TERMINAL_STAGES,
   WON_STAGES,
@@ -109,7 +109,7 @@ const leadSchema = new Schema(
     reference: { type: String, required: true, trim: true, uppercase: true, maxlength: 64 },
 
     /** Destination market, from the worksheet and the reference prefix. */
-    market: { type: String, enum: MARKET_VALUES, default: MARKET.OTHER, index: true },
+    market: { type: String, enum: MARKET_VALUES, default: DEFAULT_MARKET, index: true },
 
     // --- Relationships -----------------------------------------------------
     company: { type: Schema.Types.ObjectId, ref: 'Company', default: null, index: true },

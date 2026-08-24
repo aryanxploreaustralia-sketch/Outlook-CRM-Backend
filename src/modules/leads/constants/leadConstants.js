@@ -296,10 +296,21 @@ export const COMPANY_NAME_NOISE = Object.freeze([
  * The workbook keeps Australia and New Zealand on separate tabs and encodes the
  * same split in the reference prefix (`XAMP…` versus `XNMP…`/`XNZMP…`).
  */
+/**
+ * The destinations this DMC sells.
+ *
+ * `OTHER` was removed. It had been the catch-all, and it was also the fallback
+ * three separate places reached for — the schema default, the reference-series
+ * prefix, and `deriveMarket` when a sheet named no market. Nothing ever landed
+ * in it: of 6,009 enquiries, 5,302 are AU and 707 NZ, and none were OTHER,
+ * because the reference prefix always identified the series even when the sheet
+ * name did not. Those fallbacks now resolve to `AU`, the dominant destination
+ * and the one the create form already defaults to.
+ */
 export const MARKET = Object.freeze({
   AU: 'AU',
   NZ: 'NZ',
-  OTHER: 'OTHER',
+  FJ: 'FJ',
 })
 
 export const MARKET_VALUES = Object.freeze(Object.values(MARKET))
@@ -307,8 +318,16 @@ export const MARKET_VALUES = Object.freeze(Object.values(MARKET))
 export const MARKET_LABELS = Object.freeze({
   AU: 'Australia',
   NZ: 'New Zealand',
-  OTHER: 'Other',
+  FJ: 'Fiji',
 })
+
+/**
+ * What an unidentifiable enquiry is filed under.
+ *
+ * Named rather than repeated, so the seven places that used to reach for
+ * `MARKET.OTHER` now agree by construction instead of by coincidence.
+ */
+export const DEFAULT_MARKET = MARKET.AU
 
 // ---------------------------------------------------------------------------
 // Import

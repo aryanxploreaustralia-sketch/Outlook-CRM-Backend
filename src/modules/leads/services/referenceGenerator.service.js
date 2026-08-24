@@ -24,7 +24,7 @@
  */
 
 import { Lead } from '../../../models/lead.model.js'
-import { MARKET } from '../constants/leadConstants.js'
+import { DEFAULT_MARKET, MARKET } from '../constants/leadConstants.js'
 
 /** Splits `XAMP1687` into `{ prefix: 'XAMP', digits: '1687' }`. */
 const REFERENCE_PATTERN = /^([A-Z]+)(\d+)$/
@@ -33,7 +33,8 @@ const REFERENCE_PATTERN = /^([A-Z]+)(\d+)$/
 const SEED_PREFIX = Object.freeze({
   [MARKET.AU]: 'XAMP',
   [MARKET.NZ]: 'XNMP',
-  [MARKET.OTHER]: 'XXMP',
+  // Follows the same shape as the two above: X, the destination's initial, MP.
+  [MARKET.FJ]: 'XFMP',
 })
 
 /** Width a brand-new series is numbered at. */
@@ -73,7 +74,7 @@ async function learnSeries({ owner, market }) {
   }
 
   if (seen.size === 0) {
-    return { prefix: SEED_PREFIX[market] ?? SEED_PREFIX[MARKET.OTHER], width: SEED_WIDTH }
+    return { prefix: SEED_PREFIX[market] ?? SEED_PREFIX[DEFAULT_MARKET], width: SEED_WIDTH }
   }
 
   const [prefix, entry] = [...seen.entries()].sort((a, b) => b[1].count - a[1].count)[0]
@@ -128,7 +129,7 @@ async function highestNumber({ owner, prefix }) {
  * @param {{ owner: any, market?: string }} params
  * @returns {Promise<string>}
  */
-export async function nextReference({ owner, market = MARKET.OTHER }) {
+export async function nextReference({ owner, market = DEFAULT_MARKET }) {
   const { prefix, width } = await learnSeries({ owner, market })
   let next = (await highestNumber({ owner, prefix })) + 1
 

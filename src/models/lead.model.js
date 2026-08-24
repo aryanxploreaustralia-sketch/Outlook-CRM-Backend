@@ -173,6 +173,20 @@ const leadSchema = new Schema(
     /** The `Remark` column. Internal only — never sent to a customer. */
     internalNotes: { type: String, trim: true, default: null, maxlength: 4000 },
 
+    /*
+     * Where the enquiry came from — website, referral, email, walk-in.
+     *
+     * Shown as "From". Free text rather than an enum: the sheets carry no such
+     * column today, so there is no vocabulary to enumerate yet, and an enum
+     * guessed now would reject the first real value somebody types. Indexed
+     * because "how many came from referrals" is the question this field exists
+     * to answer.
+     *
+     * Deliberately *not* `city`. That is the departure city of the travellers
+     * and means something else entirely.
+     */
+    source: { type: String, trim: true, default: null, maxlength: 128, index: true },
+
     // --- Campaign linkage --------------------------------------------------
     /** Campaigns this lead has been included in. */
     campaigns: { type: [{ type: Schema.Types.ObjectId, ref: 'Campaign' }], default: [] },
@@ -391,6 +405,8 @@ leadSchema.methods.toSummaryJSON = function toSummaryJSON() {
     stage: this.stage,
     stageLabel: LEAD_STAGE_LABELS[this.stage] ?? this.stage,
     handledBy: this.handledBy,
+    /** Where the enquiry came from. Shown as "From". */
+    source: this.source,
     /*
      * The workbook's `Remark` column, on the list shape as well as the detail.
      *

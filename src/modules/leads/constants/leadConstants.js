@@ -328,6 +328,8 @@ export const LEAD_FIELD = Object.freeze({
   HANDLED_BY: 'handledBy',
   STAGE: 'stage',
   NOTES: 'notes',
+  /** A "From" column, if a workbook ever carries one. */
+  SOURCE: 'source',
   IGNORE: '__ignore__',
 })
 
@@ -344,6 +346,7 @@ export const LEAD_FIELD_LABELS = Object.freeze({
   phone: 'Contact Number',
   pax: 'Pax',
   handledBy: 'Handled By',
+  source: 'From',
   stage: 'Status',
   notes: 'Remark',
   __ignore__: '— Do not import —',

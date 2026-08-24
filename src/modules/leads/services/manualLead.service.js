@@ -62,6 +62,7 @@ const FORM_COLUMNS = Object.freeze([
   { form: 'handledBy', field: LEAD_FIELD.HANDLED_BY },
   { form: 'stage', field: LEAD_FIELD.STAGE },
   { form: 'notes', field: LEAD_FIELD.NOTES },
+  { form: 'source', field: LEAD_FIELD.SOURCE },
 ])
 
 /** Builds the one-row sheet and the mapping that describes it. */
@@ -170,10 +171,16 @@ export async function createLeadManually({
   // manual lead is correctly invisible to them.
   const resolver = createResolver({ owner, importJob: null, createdBy })
 
+  /*
+   * The company's city is the travel agent's, which is a different fact from
+   * the enquiry's departure city. The form asks for it separately now; when it
+   * is left blank the enquiry's city is used, which is what this did before and
+   * keeps every existing caller behaving identically.
+   */
   const company = await resolver.resolveCompany({
     companyName: data.companyName,
     email: data.email,
-    city: data.city,
+    city: String(form.agentCity ?? '').trim() || data.city,
   })
 
   const contact = await resolver.resolveContact({
@@ -215,6 +222,8 @@ export async function createLeadManually({
       ],
       handledBy: data.handledBy,
       internalNotes: data.internalNotes,
+      /** "From" — where the enquiry came from. */
+      source: data.source,
       // No import job, no sheet, no row — this enquiry came from a person.
       importJob: null,
       firstImportJob: null,

@@ -367,6 +367,8 @@ export function validateLeadRow({ row, mapping, rowNumber, sheetName = '' }) {
       stage,
       handledBy: handledBy ? handledBy.slice(0, 64) : null,
       internalNotes: (raw[LEAD_FIELD.NOTES] ?? '').trim().slice(0, 4000) || null,
+      /** "From" — free text, so nothing to parse or reject. */
+      source: (raw[LEAD_FIELD.SOURCE] ?? '').trim().slice(0, 128) || null,
 
       sourceSheet: sheetName || null,
       sourceRow: rowNumber,

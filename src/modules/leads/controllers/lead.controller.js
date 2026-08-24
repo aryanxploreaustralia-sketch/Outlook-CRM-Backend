@@ -68,6 +68,7 @@ const updateLeadSchema = z.object({
   stageReason: z.string().trim().max(512).optional(),
   handledBy: z.string().trim().max(64).nullable().optional(),
   internalNotes: z.string().trim().max(4000).nullable().optional(),
+  source: z.string().trim().max(128).nullable().optional(),
   travelDate: z.coerce.date().nullable().optional(),
   travelDateText: z.string().trim().max(128).nullable().optional(),
   city: z.string().trim().max(128).nullable().optional(),
@@ -224,6 +225,14 @@ const createLeadSchema = z.object({
   handledBy: z.string().trim().max(64).optional().default(''),
   stage: z.string().trim().max(64).optional().default(''),
   notes: z.string().trim().max(4000).optional().default(''),
+  /** Shown as "From". Where the enquiry came from. */
+  source: z.string().trim().max(128).optional().default(''),
+  /*
+   * The travel agent's own city, which belongs to the company record rather
+   * than the enquiry — `city` above is the travellers' departure city. Not a
+   * lead field: it is threaded to `resolveCompany`, which already stores it.
+   */
+  agentCity: z.string().trim().max(128).optional().default(''),
   market: z.enum(MARKET_VALUES).optional(),
 
   /** Mirrors the workbook run's own switch. Default on, as an import is. */
@@ -520,7 +529,7 @@ export const updateFull = asyncHandler(async (req, res) => {
     }
 
     for (const field of [
-      'handledBy', 'internalNotes', 'travelDate', 'travelDateText',
+      'handledBy', 'internalNotes', 'source', 'travelDate', 'travelDateText',
       'city', 'paxText', 'adultCount', 'childCount', 'doNotContact',
     ]) {
       if (data[field] !== undefined) lead[field] = data[field]
@@ -597,7 +606,7 @@ export const update = asyncHandler(async (req, res) => {
   }
 
   for (const field of [
-    'handledBy', 'internalNotes', 'travelDate', 'travelDateText',
+    'handledBy', 'internalNotes', 'source', 'travelDate', 'travelDateText',
     'city', 'paxText', 'adultCount', 'childCount', 'doNotContact',
   ]) {
     if (data[field] !== undefined) lead[field] = data[field]

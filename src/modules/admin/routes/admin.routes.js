@@ -309,6 +309,19 @@ router.delete(
   controller.deleteAdminUserMicrosoftIdentity,
 )
 
+/*
+ * The Google equivalent, and the same capability.
+ *
+ * Its usual subject is a *removed* account whose Google identity is blocking
+ * the replacement account from ever signing in — the case the sign-in service
+ * refuses and tells an operator to resolve here.
+ */
+router.delete(
+  '/users/:id/google-identity',
+  requirePermission(PERMISSIONS.ROLES_MANAGE),
+  controller.deleteAdminUserGoogleIdentity,
+)
+
 /** Whether the organization has been claimed. Read-only. */
 router.get(
   '/organization/bootstrap',

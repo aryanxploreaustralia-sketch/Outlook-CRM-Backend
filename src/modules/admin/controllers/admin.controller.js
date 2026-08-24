@@ -66,6 +66,7 @@ import {
   getBootstrapStatus,
   getRoleControl,
   linkMicrosoftIdentity,
+  unlinkGoogleIdentity,
   unlinkMicrosoftIdentity,
   getUser,
   inviteUser,
@@ -554,6 +555,28 @@ export const deleteAdminUserMicrosoftIdentity = asyncHandler(async (req, res) =>
   })
 
   return sendSuccess(res, { message: 'Microsoft identity removed.', data: result })
+})
+
+/**
+ * DELETE /api/v1/admin/users/:id/google-identity
+ *
+ * The other half of the remediation `googleIdentity.service.js` names when it
+ * refuses a sign-in whose Google identity is still held by a removed account.
+ */
+export const deleteAdminUserGoogleIdentity = asyncHandler(async (req, res) => {
+  const id = objectIdSchema.parse(req.params.id)
+  const result = await unlinkGoogleIdentity({ id, actor: req.auth.user })
+
+  await recordAudit({
+    req,
+    event: 'MAILBOX_DISCONNECTED',
+    summary: `Unlinked the Google identity from ${result.user.email}`,
+    target: { type: 'user', id: result.user.id, name: result.user.email },
+    performedFor: { _id: result.user.id, email: result.user.email },
+    metadata: { previous: result.previous },
+  })
+
+  return sendSuccess(res, { message: 'Google identity removed.', data: result })
 })
 
 /**

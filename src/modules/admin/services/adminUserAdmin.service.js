@@ -794,6 +794,83 @@ export async function unlinkMicrosoftIdentity({ id, actor }) {
   return { event: 'identity.unlinked', previous, user: userDirectoryDTO(updated, {}) }
 }
 
+
+/**
+ * Removes a linked Google identity.
+ *
+ * ## Why this exists
+ *
+ * The unique index on `googleId` has a partial filter of
+ * `{ googleId: { $type: 'string' } }` — it covers deleted documents too. So a
+ * removed account goes on holding its Google `sub` forever, and when the same
+ * person is created again the sign-in service finds their new account by
+ * verified email, stamps the `sub` onto it, and the write is rejected with a
+ * duplicate key. `googleIdentity.service.js` reports that deliberately rather
+ * than stealing the identifier from the old record, and tells the operator to
+ * "unlink or restore the removed account".
+ *
+ * Only the Microsoft half of that sentence was ever implemented. This is the
+ * other half — without it the instruction in that error message cannot be
+ * followed, and the replacement account can never sign in.
+ *
+ * ## The last-identity rule, and where it differs from Microsoft's
+ *
+ * Unlinking must not strip the last route into a **live** account: there is no
+ * password to fall back on. A **removed** account is the opposite case — it
+ * cannot sign in at whatever identity it holds, and that held identity is
+ * precisely what blocks its replacement. So the guard applies to live accounts
+ * only, which is what makes this usable for the situation it exists for.
+ */
+export async function unlinkGoogleIdentity({ id, actor }) {
+  const target = await repo.findUserById(id)
+
+  if (!target) throw ApiError.notFound('That user could not be found.')
+
+  const isSelf = String(actor._id) === String(target._id)
+
+  if (!isSelf && !canModifyRoleOf(
+    { id: String(actor._id), role: actor.role },
+    { id: String(target._id), role: target.role },
+  )) {
+    throw ApiError.forbidden(
+      `Your role cannot modify a ${ROLE_LABELS[target.role] ?? target.role}.`,
+      { details: { reason: 'target_senior' } },
+    )
+  }
+
+  if (!target.googleId) {
+    throw ApiError.conflict('That account has no Google identity linked.', {
+      details: { reason: 'not_linked' },
+    })
+  }
+
+  // Live accounts keep the guarantee that they retain a way in. A removed one
+  // has no way in regardless, so refusing here would protect nothing and would
+  // leave the replacement account permanently unable to sign in.
+  if (!target.isDeleted && !target.microsoftId && !target.microsoftEmail) {
+    throw ApiError.conflict(
+      'Google is the only way into that account. Link a Microsoft identity first, or this account can never sign in again.',
+      { details: { reason: 'last_identity' } },
+    )
+  }
+
+  const previous = target.googleId
+
+  const updated = await User.findOneAndUpdate(
+    { _id: target._id },
+    { $set: { googleId: null } },
+    { returnDocument: 'after' },
+  )
+
+  log.info('Google identity unlinked', {
+    userId: String(target._id),
+    wasDeleted: Boolean(target.isDeleted),
+    actor: String(actor._id),
+  })
+
+  return { event: 'identity.unlinked', previous, user: userDirectoryDTO(updated, {}) }
+}
+
 /**
  * Whether the organization has been claimed, and by whom.
  *

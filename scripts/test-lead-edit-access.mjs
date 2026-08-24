@@ -57,6 +57,17 @@ Company.findById = async () => null
 Contact.findById = async () => null
 
 /*
+ * `getById` also names the enquiry's holder, so it looks the owner up. Mongoose
+ * returns a Query and the controller chains `.select().lean()`, so this stub is
+ * synchronous — an async one makes `.select` undefined and the whole request
+ * fails before it can report `canEdit`.
+ */
+const { User } = await import(`${B}/models/user.model.js`)
+User.findById = () => ({
+  select: () => ({ lean: async () => ({ _id: OWNER_A, displayName: 'Owner A' }) }),
+})
+
+/*
  * The audit trail, intercepted at the model rather than at the service.
  * ES module exports are read-only, so `recordAudit` itself cannot be replaced —
  * and it should not be: letting the real recorder run is what proves the

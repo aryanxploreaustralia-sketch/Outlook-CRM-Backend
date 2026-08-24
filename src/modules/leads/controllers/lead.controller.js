@@ -16,6 +16,8 @@ import { Company } from '../../../models/company.model.js'
 import { Contact } from '../../../models/contact.model.js'
 import { Lead } from '../../../models/lead.model.js'
 import { ROLES } from '../../../constants/roles.js'
+import { USER_STATUS } from '../../../constants/userStatus.js'
+import { User } from '../../../models/user.model.js'
 import { updateContactSchema } from '../../contacts/validators/contact.validator.js'
 import { fromXlsx, listSheets } from '../../contacts/utils/xlsx.js'
 import { detectFormat } from '../../import/parsers/index.js'
@@ -228,6 +230,14 @@ const createLeadSchema = z.object({
   /** Shown as "From". Where the enquiry came from. */
   source: z.string().trim().max(128).optional().default(''),
   /*
+   * The manager who will hold the enquiry.
+   *
+   * An id, never a name: `Lead.owner` is a reference, and a name is neither
+   * unique nor stable. Absent means "whoever is creating it", which is what
+   * this endpoint has always done.
+   */
+  assignTo: objectId.optional(),
+  /*
    * The travel agent's own city, which belongs to the company record rather
    * than the enquiry — `city` above is the travellers' departure city. Not a
    * lead field: it is threaded to `resolveCompany`, which already stores it.
@@ -249,8 +259,26 @@ const createLeadSchema = z.object({
  * ACTIVE template, the mailbox, and who is asking.
  */
 export const create = asyncHandler(async (req, res) => {
-  const { sendMail, agentName, ...form } = createLeadSchema.parse(req.body)
-  const owner = ownerOf(req)
+  const { sendMail, agentName, assignTo, ...form } = createLeadSchema.parse(req.body)
+
+  /**
+   * Two different people, and the distinction matters.
+   *
+   * `creator` is whoever is filling the form. Their mailbox sends the
+   * introduction and their ACTIVE template renders it, which is why template
+   * resolution below stays on them — a sales user must not be blocked because
+   * the manager they are assigning to has never set a template up.
+   *
+   * `owner` is who ends up holding the enquiry. It also scopes the reference
+   * series and the company/contact records, because `(owner, reference)` is a
+   * unique index: allocating from the creator's series and then saving under
+   * the manager would produce a number from the wrong sequence.
+   *
+   * With no assignee the two are the same value, so nothing about the existing
+   * behaviour changes.
+   */
+  const creator = ownerOf(req)
+  const owner = assignTo ? await resolveAssignee(assignTo) : creator
 
   /**
    * The template and the mailbox are resolved exactly as `/leads/workbook/sync`
@@ -266,7 +294,7 @@ export const create = asyncHandler(async (req, res) => {
   let mailbox = null
 
   if (sendMail) {
-    template = await resolveActiveTemplate({ owner })
+    template = await resolveActiveTemplate({ owner: creator })
     const context = await resolveContext({ auth: req.auth, createIfMissing: true })
     provider = context.provider
     mailbox = context.mailbox
@@ -434,13 +462,79 @@ export const audience = asyncHandler(async (req, res) => {
   })
 })
 
+/**
+ * The managers an enquiry may be assigned to.
+ *
+ * Managers only, and active ones. The list is deliberately narrow: it is read
+ * by any signed-in user who can create an enquiry, so it returns a display name
+ * and an id and nothing else — enough to choose from, and no more of somebody's
+ * record than choosing requires.
+ */
+export const assignees = asyncHandler(async (req, res) => {
+  const managers = await User.find({
+    role: ROLES.MANAGER,
+    status: USER_STATUS.ACTIVE,
+    isDeleted: { $ne: true },
+  })
+    .select('displayName email')
+    .sort({ displayName: 1 })
+    .lean()
+
+  return sendSuccess(res, {
+    message: 'Assignable managers loaded.',
+    data: {
+      items: managers.map((user) => ({
+        id: String(user._id),
+        name: user.displayName ?? user.email ?? 'Unnamed user',
+      })),
+    },
+  })
+})
+
+/**
+ * Resolves who an enquiry is being assigned to, or refuses.
+ *
+ * Enforced here rather than trusted from the client. The dropdown showing only
+ * managers is a convenience; this is the rule. A sales user posting a
+ * colleague's id — or their own — gets a 403, because the constraint is on the
+ * *target* role, not on who is asking: an enquiry is assigned to a manager or
+ * to nobody.
+ *
+ * 403 rather than 404 on purpose. The id came from a list this caller is
+ * allowed to read, so its existence is not a secret; what is being refused is
+ * the assignment, and saying so is more useful than pretending the user is
+ * missing.
+ */
+async function resolveAssignee(assignTo) {
+  const user = await User.findOne({ _id: assignTo, isDeleted: { $ne: true } })
+    .select('role status displayName')
+    .lean()
+
+  if (!user) throw ApiError.notFound('That user does not exist.')
+
+  if (user.role !== ROLES.MANAGER) {
+    throw ApiError.forbidden('An enquiry can only be assigned to a manager.')
+  }
+  if (user.status !== USER_STATUS.ACTIVE) {
+    throw ApiError.forbidden('That manager\'s account is not active.')
+  }
+
+  return user._id
+}
+
 /** GET /api/v1/leads/:id */
 export const getById = asyncHandler(async (req, res) => {
   const lead = await loadLead(req, { anyOwner: true })
 
-  const [company, contact] = await Promise.all([
+  const [company, contact, holder] = await Promise.all([
     lead.company ? Company.findById(lead.company) : null,
     lead.contact ? Contact.findById(lead.contact) : null,
+    /*
+     * Who holds the enquiry, resolved to a name here rather than on the model's
+     * DTO — the list endpoints return hundreds of rows and must not each pay
+     * for a user lookup. The detail returns one.
+     */
+    lead.owner ? User.findById(lead.owner).select('displayName email').lean() : null,
   ])
 
   return sendSuccess(res, {
@@ -456,6 +550,10 @@ export const getById = asyncHandler(async (req, res) => {
        * only stops the UI offering something the API would refuse.
        */
       canEdit: canEditLead(req, lead),
+      /** Shown as "Assigned to". Null only for an enquiry with no owner. */
+      owner: holder
+        ? { id: String(holder._id), name: holder.displayName ?? holder.email ?? 'Unnamed user' }
+        : null,
     },
   })
 })

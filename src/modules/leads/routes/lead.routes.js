@@ -131,6 +131,16 @@ leadRouter.post('/workbook/inspect', workbookLimiter, rawUpload, controller.insp
 leadRouter.post('/workbook/import', workbookLimiter, rawUpload, controller.importWorkbook)
 leadRouter.post('/workbook/:importJob/rollback', controller.rollback)
 
+/*
+ * The managers an enquiry may be assigned to.
+ *
+ * A literal path, registered with the others well before `/:id`, so Express
+ * never reads "assignees" as a lead id. No extra guard: it is readable by
+ * anyone the router has already authenticated, and it returns nothing but a
+ * name and an id.
+ */
+leadRouter.get('/assignees', controller.assignees)
+
 leadRouter.get('/', controller.list)
 
 /**

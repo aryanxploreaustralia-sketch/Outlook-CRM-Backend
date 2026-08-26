@@ -190,8 +190,10 @@ export const list = asyncHandler(async (req, res) => {
   const query = listQuerySchema.parse(req.query)
 
   const { items, pagination } = await leadService.listLeads({
-    owner: ownerOf(req),
     ...query,
+    // `owner` after the spread: the session decides whose register this is,
+    // never the query string. See the note in `buildLeadFilter`'s callers.
+    owner: ownerOf(req),
     stages: query.stages ? query.stages.split(',').map((s) => s.trim()).filter(Boolean) : null,
     campaignEligible: query.campaignEligible === undefined ? null : query.campaignEligible === 'true',
   })

@@ -208,7 +208,17 @@ export { resolveCompanyScope as resolveCompanyScopeForExport }
  * @returns {Promise<{ items, pagination, facets }>}
  */
 export async function listLeads({ owner, page = 1, limit = 50, sort = '-quote', ...criteria }) {
-  const filter = buildLeadFilter({ owner, ...criteria })
+  /*
+   * `owner` LAST, deliberately.
+   *
+   * It is the authenticated caller's id, and everything spread before it is
+   * caller-supplied. Written the other way round — `{ owner, ...criteria }` —
+   * an `owner` key surviving into `criteria` would silently overwrite the
+   * session's, turning every filter into a cross-user read. Today the query
+   * schemas strip that key, so the order is the only thing standing between
+   * this and an IDOR the moment somebody adds `owner` to one of them.
+   */
+  const filter = buildLeadFilter({ ...criteria, owner })
 
   if (filter._companyScope) {
     const ids = await resolveCompanyScope(owner, filter._companyScope)
@@ -463,7 +473,17 @@ export async function globalSearch({ owner, query, limit = 10 }) {
  * @returns {{ contactIds, leadIds, excluded, breakdown }}
  */
 export async function resolveLeadAudience({ owner, criteria = {} }) {
-  const filter = buildLeadFilter({ owner, ...criteria, campaignEligible: true })
+  /*
+   * `owner` LAST, deliberately.
+   *
+   * It is the authenticated caller's id, and everything spread before it is
+   * caller-supplied. Written the other way round — `{ owner, ...criteria }` —
+   * an `owner` key surviving into `criteria` would silently overwrite the
+   * session's, turning every filter into a cross-user read. Today the query
+   * schemas strip that key, so the order is the only thing standing between
+   * this and an IDOR the moment somebody adds `owner` to one of them.
+   */
+  const filter = buildLeadFilter({ ...criteria, owner, campaignEligible: true })
 
   if (filter._companyScope) {
     const ids = await resolveCompanyScope(owner, filter._companyScope)

@@ -151,7 +151,17 @@ function toRow(lead) {
  * @returns {Promise<{ buffer: Buffer, filename: string, contentType: string, count: number, truncated: boolean }>}
  */
 export async function exportLeadsWorkbook({ owner, criteria = {} }) {
-  const filter = buildLeadFilter({ owner, ...criteria })
+  /*
+   * `owner` LAST, deliberately.
+   *
+   * It is the authenticated caller's id, and everything spread before it is
+   * caller-supplied. Written the other way round — `{ owner, ...criteria }` —
+   * an `owner` key surviving into `criteria` would silently overwrite the
+   * session's, turning every filter into a cross-user read. Today the query
+   * schemas strip that key, so the order is the only thing standing between
+   * this and an IDOR the moment somebody adds `owner` to one of them.
+   */
+  const filter = buildLeadFilter({ ...criteria, owner })
 
   // Country and state live on the company, so the list resolves them into a
   // company id set. The export must do the same or those two filters would

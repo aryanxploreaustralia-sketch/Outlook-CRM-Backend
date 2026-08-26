@@ -10,6 +10,7 @@ import mongoose from 'mongoose'
 
 import { Company } from '../../../models/company.model.js'
 import { Contact } from '../../../models/contact.model.js'
+import { resolveRange } from '../../admin/validators/adminAnalytics.validator.js'
 import { Lead } from '../../../models/lead.model.js'
 import {
   CAMPAIGN_ELIGIBLE_STAGES,
@@ -56,6 +57,22 @@ export function buildLeadFilter({
   doNotContact = null,
   quoteFrom = null,
   quoteTo = null,
+  /**
+   * A period over a named date field — the register's own version of the
+   * control the Lead monitor carries.
+   *
+   * `dateField` says which date is being filtered and `preset`/`from`/`to`
+   * bound it. The bounds are resolved by `resolveRange`, the same function the
+   * admin analytics and the lead monitor use, so "last 7 days" cannot come to
+   * mean two different windows in two places.
+   *
+   * All optional. Absent, no date clause is added at all and the register
+   * behaves exactly as it did before this existed.
+   */
+  dateField = null,
+  preset = null,
+  from = null,
+  to = null,
   search = null,
   includeDeleted = false,
 } = {}) {
@@ -79,8 +96,28 @@ export function buildLeadFilter({
   // into a company id list; see `resolveCompanyScope`.
   if (country || state) filter._companyScope = { country, state }
 
+  /*
+   * The period, on whichever date field the caller named.
+   *
+   * Merged into any operator already on that field rather than assigned over
+   * it: `quoteFrom`/`quoteTo` below may already constrain `quoteDate`, and an
+   * assignment would erase it and quietly widen the result. The two use the
+   * same operator keys, so both survive and intersect.
+   */
+  if (dateField && (preset || from || to)) {
+    const window = resolveRange({ preset, from, to })
+
+    if (window.from || window.to) {
+      filter[dateField] = {
+        ...(filter[dateField] ?? {}),
+        ...(window.from ? { $gte: window.from } : {}),
+        ...(window.to ? { $lte: window.to } : {}),
+      }
+    }
+  }
+
   if (quoteFrom || quoteTo) {
-    filter.quoteDate = {}
+    filter.quoteDate = { ...(filter.quoteDate ?? {}) }
     if (quoteFrom) filter.quoteDate.$gte = new Date(quoteFrom)
     if (quoteTo) filter.quoteDate.$lte = new Date(quoteTo)
   }

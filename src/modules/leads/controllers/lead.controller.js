@@ -15,6 +15,7 @@ import { recordAudit } from '../../audit/services/auditRecorder.service.js'
 import { Company } from '../../../models/company.model.js'
 import { Contact } from '../../../models/contact.model.js'
 import { Lead } from '../../../models/lead.model.js'
+import { DATE_PRESETS } from '../../admin/validators/adminAnalytics.validator.js'
 import { ROLES } from '../../../constants/roles.js'
 import { USER_STATUS } from '../../../constants/userStatus.js'
 import { User } from '../../../models/user.model.js'
@@ -62,6 +63,18 @@ const listQuerySchema = z.object({
   campaignEligible: z.enum(['true', 'false']).optional(),
   quoteFrom: z.string().optional(),
   quoteTo: z.string().optional(),
+  /*
+   * The period control, mirroring the lead monitor's.
+   *
+   * A whitelist of four fields, not a caller-supplied field name: an arbitrary
+   * string here would let somebody range-filter on any column in the document,
+   * indexed or not. `owner` is deliberately still absent from this schema — see
+   * the note on `list` — so none of this widens who a caller can see.
+   */
+  dateField: z.enum(['travelDate', 'quoteDate', 'createdAt', 'updatedAt']).optional(),
+  preset: z.enum(DATE_PRESETS).optional(),
+  from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   search: z.string().trim().max(200).optional(),
 })
 

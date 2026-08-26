@@ -24,7 +24,7 @@
     "migrate:lead-stages": "node scripts/migrate-lead-stages.js",
     "verify:mailboxes": "node scripts/verify-multi-mailbox.js",
     "repair:workspace": "node scripts/repair-workspace-ownership.js",
-    "config:check": "node -e \"import('./src/config/index.js').then(m=>{console.log(JSON.stringify(m.config,null,2));process.exit(0)})\"",
+    "config:check": "node scripts/config-check.mjs",
     "seed:contacts": "node scripts/seed-contacts.js",
     "seed:campaigns": "node scripts/seed-campaigns.js",
     "seed:leads": "node scripts/seed-leads.js",

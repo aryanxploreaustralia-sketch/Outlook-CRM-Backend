@@ -10,7 +10,6 @@ import mongoose from 'mongoose'
 
 import { Company } from '../../../models/company.model.js'
 import { Contact } from '../../../models/contact.model.js'
-import { resolveRange } from '../../admin/validators/adminAnalytics.validator.js'
 import { Lead } from '../../../models/lead.model.js'
 import {
   CAMPAIGN_ELIGIBLE_STAGES,
@@ -58,21 +57,14 @@ export function buildLeadFilter({
   quoteFrom = null,
   quoteTo = null,
   /**
-   * A period over a named date field — the register's own version of the
-   * control the Lead monitor carries.
+   * The travel-date window, named to match the quote pair above.
    *
-   * `dateField` says which date is being filtered and `preset`/`from`/`to`
-   * bound it. The bounds are resolved by `resolveRange`, the same function the
-   * admin analytics and the lead monitor use, so "last 7 days" cannot come to
-   * mean two different windows in two places.
-   *
-   * All optional. Absent, no date clause is added at all and the register
-   * behaves exactly as it did before this existed.
+   * Two independent ranges rather than one field-switching pair: a consultant
+   * asks "who quoted this month AND travels next week", which a single range
+   * over a chosen field cannot express.
    */
-  dateField = null,
-  preset = null,
-  from = null,
-  to = null,
+  travelFrom = null,
+  travelTo = null,
   search = null,
   includeDeleted = false,
 } = {}) {
@@ -97,30 +89,47 @@ export function buildLeadFilter({
   if (country || state) filter._companyScope = { country, state }
 
   /*
-   * The period, on whichever date field the caller named.
+   * The two date windows.
    *
-   * Merged into any operator already on that field rather than assigned over
-   * it: `quoteFrom`/`quoteTo` below may already constrain `quoteDate`, and an
-   * assignment would erase it and quietly widen the result. The two use the
-   * same operator keys, so both survive and intersect.
+   * ## Why the bounds are built in UTC
+   *
+   * Every `travelDate` and `quoteDate` in this register is stored at exactly
+   * 00:00:00 UTC — they are calendar dates, not instants. Building a bound
+   * from a local midnight would shift it: for a reader at UTC+05:30, local
+   * midnight is 18:30 the previous day, and "today" would quietly include
+   * yesterday's departures. So a `YYYY-MM-DD` from the client becomes UTC
+   * midnight, and never anything else.
+   *
+   * ## Both ends inclusive
+   *
+   * `from` opens the day, `to` closes it at 23:59:59.999. Reading `to` as bare
+   * midnight would still work for the values stored here, but it would drop
+   * the whole final day the moment one carried a time — the off-by-one this
+   * spells out rather than relies on luck to avoid.
+   *
+   * ## Invalid dates need no special case
+   *
+   * A null `quoteDate` cannot match a `$gte` against a Date (MongoDB brackets
+   * by type), and the single Excel-epoch value at 1899-12-30 falls outside
+   * every window a person would ask for. They drop out of a range query on
+   * their own; "Any date" sends no bound at all and still sees them.
    */
-  if (dateField && (preset || from || to)) {
-    const window = resolveRange({ preset, from, to })
+  const startOfDayUtc = (value) => new Date(`${value}T00:00:00.000Z`)
+  const endOfDayUtc = (value) => new Date(`${value}T23:59:59.999Z`)
 
-    if (window.from || window.to) {
-      filter[dateField] = {
-        ...(filter[dateField] ?? {}),
-        ...(window.from ? { $gte: window.from } : {}),
-        ...(window.to ? { $lte: window.to } : {}),
-      }
+  /** Merged, never assigned — `travelMonth` may already constrain the field. */
+  const applyWindow = (field, fromValue, toValue) => {
+    if (!fromValue && !toValue) return
+
+    filter[field] = {
+      ...(filter[field] ?? {}),
+      ...(fromValue ? { $gte: startOfDayUtc(fromValue) } : {}),
+      ...(toValue ? { $lte: endOfDayUtc(toValue) } : {}),
     }
   }
 
-  if (quoteFrom || quoteTo) {
-    filter.quoteDate = { ...(filter.quoteDate ?? {}) }
-    if (quoteFrom) filter.quoteDate.$gte = new Date(quoteFrom)
-    if (quoteTo) filter.quoteDate.$lte = new Date(quoteTo)
-  }
+  applyWindow('travelDate', travelFrom, travelTo)
+  applyWindow('quoteDate', quoteFrom, quoteTo)
 
   /**
    * Travel month, as `YYYY-MM`.

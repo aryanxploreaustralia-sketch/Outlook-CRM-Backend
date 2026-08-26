@@ -15,7 +15,6 @@ import { recordAudit } from '../../audit/services/auditRecorder.service.js'
 import { Company } from '../../../models/company.model.js'
 import { Contact } from '../../../models/contact.model.js'
 import { Lead } from '../../../models/lead.model.js'
-import { DATE_PRESETS } from '../../admin/validators/adminAnalytics.validator.js'
 import { ROLES } from '../../../constants/roles.js'
 import { USER_STATUS } from '../../../constants/userStatus.js'
 import { User } from '../../../models/user.model.js'
@@ -61,20 +60,24 @@ const listQuerySchema = z.object({
   travelMonth: z.string().regex(/^\d{4}-\d{2}$/).optional(),
   importJob: objectId.optional(),
   campaignEligible: z.enum(['true', 'false']).optional(),
-  quoteFrom: z.string().optional(),
-  quoteTo: z.string().optional(),
   /*
-   * The period control, mirroring the lead monitor's.
+   * The two date windows, as plain calendar dates.
    *
-   * A whitelist of four fields, not a caller-supplied field name: an arbitrary
-   * string here would let somebody range-filter on any column in the document,
-   * indexed or not. `owner` is deliberately still absent from this schema — see
-   * the note on `list` — so none of this widens who a caller can see.
+   * `YYYY-MM-DD` and nothing else: a full timestamp from a client carries that
+   * client's timezone, and this register stores calendar dates. The service
+   * turns each into a UTC bound, so the same string means the same day for
+   * every reader.
+   *
+   * `quoteFrom`/`quoteTo` already existed and keep their names; the travel
+   * pair is named to match rather than inventing a second convention.
+   *
+   * `owner` is still deliberately absent from this schema — see the note on
+   * `list`. None of these widens who a caller can see.
    */
-  dateField: z.enum(['travelDate', 'quoteDate', 'createdAt', 'updatedAt']).optional(),
-  preset: z.enum(DATE_PRESETS).optional(),
-  from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-  to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  quoteFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  quoteTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  travelFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  travelTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   search: z.string().trim().max(200).optional(),
 })
 

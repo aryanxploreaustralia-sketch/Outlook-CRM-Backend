@@ -192,6 +192,28 @@ export async function listAdminCampaigns(query = {}) {
  * "somebody has touched this" to be useful, and it is stated in the response so
  * nobody mistakes it for a conversation timestamp.
  */
+/**
+ * The orders `listAdminLeads` will sort by, by name.
+ *
+ * `recent` is left exactly as it was written — no `_id` tiebreak added, even
+ * though one would make its paging more deterministic. That is a real
+ * improvement and a real change, and this task is not the place to slip it into
+ * the order every existing caller already reads.
+ *
+ * `travel` has the tiebreak from the start: without it two enquiries sharing a
+ * travel date can come back in either order on either request, which lets a
+ * paged list show one twice and skip another.
+ *
+ * Ascending `travelDate` puts nulls first in MongoDB, but a caller asking for
+ * this order is asking about a window and sends `from`, and a `$gte: <Date>`
+ * bound never matches a null — so an enquiry with no travel date is already
+ * excluded before the sort sees it.
+ */
+const LEAD_ORDER = Object.freeze({
+  recent: { createdAt: -1 },
+  travel: { travelDate: 1, _id: 1 },
+})
+
 export async function listAdminLeads(query = {}) {
   const {
     stage,
@@ -205,6 +227,7 @@ export async function listAdminLeads(query = {}) {
     preset,
     from,
     to,
+    sort = 'recent',
     page = 1,
     limit = 50,
   } = query
@@ -320,7 +343,7 @@ export async function listAdminLeads(query = {}) {
       .select(
         'reference contactPerson companyName email stage market owner quoteDate travelDate travelDateText internalNotes createdAt updatedAt autoMail.status',
       )
-      .sort({ createdAt: -1 })
+      .sort(LEAD_ORDER[sort] ?? LEAD_ORDER.recent)
       .skip((page - 1) * limit)
       .limit(limit)
       .lean(),

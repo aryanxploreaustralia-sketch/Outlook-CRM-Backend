@@ -151,6 +151,20 @@ export const adminLeadQuerySchema = z.object({
   from: isoDate,
   to: isoDate,
 
+  /**
+   * Row order.
+   *
+   * `recent` is the register's own order and the default, so every existing
+   * caller is unaffected. `travel` exists because "which customers are
+   * travelling soonest" cannot be answered by sorting a page in the browser:
+   * the page is chosen by `createdAt` first, so the nearest departure may be
+   * on a page the client never fetched.
+   *
+   * A whitelist rather than a field name — a caller must not be able to name
+   * an arbitrary, unindexed field to sort a collection this size by.
+   */
+  sort: z.enum(['recent', 'travel']).default('recent'),
+
   /** Server-side paging. The monitor used to return a fixed newest-200 slice. */
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(200).default(50),

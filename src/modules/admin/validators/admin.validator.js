@@ -118,6 +118,61 @@ const enumList = (values) =>
 /** `YYYY-MM-DD`, matching the `<input type="date">` the console sends. */
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
 
+/**
+ * An IANA timezone name the caller's browser reported.
+ *
+ * Validated by asking `Intl` to use it, because an unrecognised name reaches
+ * MongoDB's `$dateToString` and throws there instead — a 500 for what is a bad
+ * request. Falls back to UTC rather than rejecting: a calendar that renders in
+ * the wrong timezone is a nuisance, one that refuses to render is a fault.
+ */
+const timezone = z
+  .string()
+  .trim()
+  .max(64)
+  .optional()
+  .transform((value) => {
+    if (!value) return 'UTC'
+    try {
+      new Intl.DateTimeFormat('en-GB', { timeZone: value })
+      return value
+    } catch {
+      return 'UTC'
+    }
+  })
+
+/** A required `YYYY-MM-DD`, for the calendar's own bounds. */
+const requiredIsoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
+
+/**
+ * `GET /admin/calendar` — per-day counts across a visible range.
+ *
+ * The span is capped so one request cannot ask the database to group a decade.
+ * 62 days covers the widest thing the month grid ever shows (a six-week grid
+ * spilling into both neighbouring months) with room to spare.
+ */
+export const adminCalendarQuerySchema = z
+  .object({ from: requiredIsoDate, to: requiredIsoDate, tz: timezone })
+  .refine((value) => value.from <= value.to, { message: '`from` must not be after `to`.' })
+  .refine(
+    (value) => (Date.parse(value.to) - Date.parse(value.from)) / 86400000 <= 62,
+    { message: 'A calendar range may not exceed 62 days.' },
+  )
+  /*
+   * `tz` on the wire, `timezone` in the service.
+   *
+   * Renamed here rather than at the call site so the service cannot be handed
+   * an object that merely looks right: it reads `timezone`, and a parsed query
+   * carrying only `tz` would silently fall back to UTC and group every task on
+   * the wrong day for anyone east or west of Greenwich.
+   */
+  .transform(({ from, to, tz }) => ({ from, to, timezone: tz }))
+
+/** `GET /admin/calendar/:date` — one day, in detail. */
+export const adminCalendarDaySchema = z
+  .object({ date: requiredIsoDate, tz: timezone })
+  .transform(({ date, tz }) => ({ date, timezone: tz }))
+
 export const adminLeadQuerySchema = z.object({
   search: searchTerm,
   stage: enumList(LEAD_STAGE_VALUES),
@@ -188,6 +243,8 @@ export const adminRolePermissionsSchema = z.object({
 export default {
   adminAnalyticsQuerySchema,
   adminCampaignQuerySchema,
+  adminCalendarDaySchema,
+  adminCalendarQuerySchema,
   adminLeadQuerySchema,
   adminRolePermissionsSchema,
 }

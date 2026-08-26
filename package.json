@@ -41,7 +41,8 @@
     "test:lead-full-edit": "node scripts/test-lead-full-edit.mjs",
     "test:lead-assignment": "node scripts/test-lead-assignment.mjs",
     "test:google-relink": "node scripts/test-google-identity-relink.mjs",
-    "verify:travel-soon": "node scripts/verify-travel-soon.mjs"
+    "verify:travel-soon": "node scripts/verify-travel-soon.mjs",
+    "verify:calendar": "node scripts/verify-calendar.mjs"
   },
   "keywords": [
     "outlook",

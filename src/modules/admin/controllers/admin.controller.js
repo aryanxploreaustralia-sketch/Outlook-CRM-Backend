@@ -53,6 +53,10 @@ import {
   unassignUsersFromMailbox,
 } from '../services/mailboxAssignment.service.js'
 import {
+  getAdminCalendar as loadAdminCalendar,
+  getAdminCalendarDay as loadAdminCalendarDay,
+} from '../services/adminCalendar.service.js'
+import {
   getAdminLeadDetail as loadAdminLeadDetail,
   listAdminCampaigns,
   listAdminLeads,
@@ -77,6 +81,8 @@ import { assignWorkbookToUser, deleteUserLeads } from '../services/adminUserLead
 import {
   adminAnalyticsQuerySchema,
   adminCampaignQuerySchema,
+  adminCalendarDaySchema,
+  adminCalendarQuerySchema,
   adminLeadQuerySchema,
   adminRolePermissionsSchema,
 } from '../validators/admin.validator.js'
@@ -989,6 +995,32 @@ export const getAdminLeadDetail = asyncHandler(async (req, res) => {
   return sendSuccess(res, {
     message: 'Enquiry loaded.',
     data: { ...detail, canEdit },
+  })
+})
+
+/**
+ * GET /api/v1/admin/calendar
+ *
+ * Per-day counts for the visible range. Read-only, and behind the same pair of
+ * capabilities the Lead monitor requires — this reads across every user's
+ * enquiries and tasks, which is exactly what `analytics.view` gates.
+ */
+export const getAdminCalendar = asyncHandler(async (req, res) => {
+  const query = adminCalendarQuerySchema.parse(req.query)
+
+  return sendSuccess(res, {
+    message: 'Calendar loaded.',
+    data: await loadAdminCalendar(query),
+  })
+})
+
+/** GET /api/v1/admin/calendar/:date — one day's records. */
+export const getAdminCalendarDay = asyncHandler(async (req, res) => {
+  const query = adminCalendarDaySchema.parse({ date: req.params.date, tz: req.query.tz })
+
+  return sendSuccess(res, {
+    message: 'Day loaded.',
+    data: await loadAdminCalendarDay(query),
   })
 })
 

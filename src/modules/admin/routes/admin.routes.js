@@ -516,6 +516,27 @@ router.get(
 )
 
 /**
+ * The dashboard calendar.
+ *
+ * The same two capabilities as the monitor above, for the same reason: this
+ * counts and lists enquiries and tasks belonging to every user in the
+ * deployment. `/calendar/:date` is registered after the literal `/calendar` so
+ * the parameter cannot swallow it.
+ */
+router.get(
+  '/calendar',
+  requireAllPermissions([PERMISSIONS.LEADS_VIEW, PERMISSIONS.ANALYTICS_VIEW]),
+  heavyReadLimiter,
+  controller.getAdminCalendar,
+)
+router.get(
+  '/calendar/:date',
+  requireAllPermissions([PERMISSIONS.LEADS_VIEW, PERMISSIONS.ANALYTICS_VIEW]),
+  heavyReadLimiter,
+  controller.getAdminCalendarDay,
+)
+
+/**
  * One enquiry, for the console.
  *
  * The same pair of capabilities the list above requires — reading one row and

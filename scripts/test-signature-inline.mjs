@@ -13,6 +13,10 @@ const { buildGraphMessage } = await import(`${B}/services/mail.service.js`)
 const { embedInlineImages } = await import(`${B}/utils/emailHtml.js`)
 const { toGraphMessage } = await import(`${B}/modules/provider/providers/microsoft/messageMapper.js`)
 
+/** `--show` prints the exact Graph payload, so a deployed build can be
+ *  compared against this one. The assertions run either way. */
+const SHOW = process.argv.includes('--show')
+
 let failures = 0
 const check = (label, ok, detail = '') => {
   if (!ok) failures += 1
@@ -121,6 +125,34 @@ check('sanitisation still applied first', !toGraphMessage({
 const mappedPlain = toGraphMessage({ subject: 'x', to: [{ address: 'a@b.c' }], bodyHtml: '<p>Hello</p>' })
 check('normal body unchanged, no attachments key',
   mappedPlain.body.content === '<p>Hello</p>' && mappedPlain.attachments === undefined)
+
+if (SHOW) {
+  const { sanitizeEmailHtml } = await import(`${B}/utils/emailHtml.js`)
+  const signature =
+    '<div>Regards,</div><div>Hardik Shah</div>' +
+    '<div><img alt="Signature" width="220" height="70" src="data:image/png;base64,' + PNG + '"></div>'
+
+  const payload = buildGraphMessage({
+    subject: 'Booking confirmed',
+    to: [{ address: 'customer@example.com' }],
+    html: '<p>Hello Ms Sonika,</p><p>Your booking has been confirmed.</p>' + sanitizeEmailHtml(signature),
+    attachments: [{ name: 'voucher.pdf', contentType: 'application/pdf', contentBytes: 'QUJD' }],
+  })
+
+  const shown = JSON.parse(JSON.stringify(payload))
+  for (const a of shown.attachments ?? []) {
+    a.contentBytes = a.contentBytes.slice(0, 16) + '... (' + a.contentBytes.length + ' chars)'
+  }
+
+  console.log('')
+  console.log('=== THE MESSAGE THIS BUILD SENDS TO GRAPH ===')
+  console.log(JSON.stringify(shown, null, 2))
+  console.log('')
+  console.log('  body references   :', (payload.body.content.match(/cid:[^"']+/g) || []).join(', '))
+  console.log('  inline attachments:', (payload.attachments || []).filter(a => a.isInline).map(a => a.contentId).join(', '))
+  console.log('  normal attachments:', (payload.attachments || []).filter(a => !a.isInline).map(a => a.name).join(', '))
+  console.log('')
+}
 
 console.log(`\n${failures === 0 ? 'ALL CHECKS PASSED' : `${failures} CHECK(S) FAILED`}`)
 process.exit(failures === 0 ? 0 : 1)

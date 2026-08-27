@@ -253,8 +253,28 @@ const createLeadSchema = z.object({
    * An id, never a name: `Lead.owner` is a reference, and a name is neither
    * unique nor stable. Absent means "whoever is creating it", which is what
    * this endpoint has always done.
+   *
+   * ## Why the empty string is folded into "absent"
+   *
+   * This was `objectId.optional()`, and `.optional()` admits `undefined` — not
+   * `''`. The form's control is a `<select>` whose "Keep it myself" row has
+   * `value=""`, and a blank `<option>` cannot submit `undefined`; `''` is the
+   * only thing the platform can send. So the default choice on the form failed
+   * the schema every time, and *every* manual lead creation was rejected unless
+   * the user picked a manager — reported as the generic "The submitted data
+   * failed validation."
+   *
+   * Both sides already agreed on the meaning: the comment above says absent is
+   * "whoever is creating it", and the form's own comment says empty means "keep
+   * it myself". They disagreed only on how to encode *nobody*. Normalising here
+   * settles it in the one place every client passes through.
+   *
+   * This does not weaken the rule. A non-empty value is still held to the full
+   * ObjectId format — `'not-an-id'` is rejected exactly as before. The only
+   * value newly accepted is the one that means "no assignee", which is a state
+   * the endpoint already supports.
    */
-  assignTo: objectId.optional(),
+  assignTo: z.preprocess((value) => (value === '' ? undefined : value), objectId.optional()),
   /*
    * The travel agent's own city, which belongs to the company record rather
    * than the enquiry — `city` above is the travellers' departure city. Not a

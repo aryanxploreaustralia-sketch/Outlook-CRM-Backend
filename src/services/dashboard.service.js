@@ -15,6 +15,7 @@ import {
   getBackendStatus,
   getConnectionStatus,
   getDatabaseHealth,
+  resolveConnectionStatus,
 } from './status.service.js'
 
 /** The shape used when mail statistics cannot be read — see `buildDashboard`. */
@@ -41,7 +42,19 @@ const EMPTY_MAIL_STATS = Object.freeze({
  */
 export async function buildDashboard(auth) {
   const profile = await buildAccountProfile(auth)
-  const connection = getConnectionStatus(auth.outlookAccount)
+
+  /*
+   * Read from the mailboxes, not from the session.
+   *
+   * This read `getConnectionStatus(auth.outlookAccount)`, which a Google
+   * sign-in leaves null — so the dashboard badge said "Not connected" for a
+   * workspace with two healthy mailboxes attached. `resolveConnectionStatus`
+   * asks the question the badge is actually claiming to answer, and still falls
+   * back to the session account when there are no mailbox rows to read.
+   */
+  const connection = auth.user
+    ? await resolveConnectionStatus({ user: auth.user._id, sessionAccount: auth.outlookAccount })
+    : getConnectionStatus(auth.outlookAccount)
 
   // Unlike the Graph probe, this is a local aggregation — one indexed query, so
   // it is fast enough to block first paint on and the counters are correct

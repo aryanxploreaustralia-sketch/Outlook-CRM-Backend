@@ -11,9 +11,11 @@
 import { ROLE_LABELS } from '../constants/roles.js'
 import { ACCOUNT_TYPES, AUTH_PROVIDERS } from '../models/user.model.js'
 import {
+  buildTokenExpiry,
   getAuthenticationStatus,
   getConnectionStatus,
   probeGraph,
+  resolveConnectionStatus,
 } from './status.service.js'
 
 /** Display labels for account types. */
@@ -87,7 +89,55 @@ export async function buildAccountProfile(auth) {
     microsoftAccount: account,
     role: user.role,
     provider: user.provider,
-    connection: getConnectionStatus(auth.outlookAccount),
+
+    /*
+     * Derived from the mailboxes above, not from the session.
+     *
+     * `microsoftAccount` immediately above is still the *session's* account and
+     * is deliberately unchanged — it answers "what did this sign-in bring with
+     * it?". `connection` answers "can this workspace send?", which is a
+     * different question and was being given the first question's answer.
+     *
+     * The mailboxes are already loaded here, so this reuses them rather than
+     * issuing the query a second time.
+     */
+    connection: connectionFromMailboxes(mailboxes, auth.outlookAccount),
+  }
+}
+
+/**
+ * The workspace connection state, from an already-loaded mailbox list.
+ *
+ * The synchronous counterpart to `resolveConnectionStatus` — same rules, same
+ * shape, no second query. Kept here rather than exported from `status.service`
+ * because this is the only caller that has the list in hand already.
+ *
+ * @param {object[]} mailboxes  Public mailbox JSON, default first.
+ * @param {?object}  sessionAccount
+ */
+function connectionFromMailboxes(mailboxes, sessionAccount) {
+  const counts = {
+    mailboxCount: mailboxes.length,
+    connectedMailboxCount: mailboxes.filter((mailbox) => mailbox.canSend).length,
+  }
+
+  if (mailboxes.length === 0) {
+    return { ...getConnectionStatus(sessionAccount), ...counts }
+  }
+
+  const representative = mailboxes.find((mailbox) => mailbox.canSend) ?? mailboxes[0]
+
+  return {
+    status: representative.status,
+    connected: counts.connectedMailboxCount > 0,
+    email: representative.emailAddress ?? null,
+    scopes: sessionAccount?.scopes ?? [],
+    connectedAt: representative.connectedAt ?? null,
+    disconnectedAt: representative.disconnectedAt ?? null,
+    disconnectReason: representative.statusReason ?? null,
+    // No token lives on a mailbox row — see `resolveConnectionStatus`.
+    tokenExpiry: buildTokenExpiry(null),
+    ...counts,
   }
 }
 
@@ -127,7 +177,18 @@ export async function buildAccountStatus(auth, { probeGraphApi = true } = {}) {
   const { getBackendStatus, getDatabaseHealth } = await import('./status.service.js')
 
   const account = auth.outlookAccount ?? null
-  const connection = getConnectionStatus(account)
+
+  /*
+   * The workspace's connection, for the same reason as `buildAccountProfile`.
+   *
+   * `account` below is left alone: the Graph probe needs a *credential*, and a
+   * mailbox row is not one. Where the session carries no account the probe is
+   * skipped exactly as it always was — this changes what the payload reports,
+   * not what it reaches out to.
+   */
+  const connection = auth.user
+    ? await resolveConnectionStatus({ user: auth.user._id, sessionAccount: account })
+    : getConnectionStatus(account)
 
   const graph = probeGraphApi
     ? await probeGraph(account && !account.disconnectedAt ? account._id.toString() : null)

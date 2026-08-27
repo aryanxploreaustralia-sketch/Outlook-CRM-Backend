@@ -104,6 +104,116 @@ export function getConnectionStatus(account) {
 }
 
 /**
+ * The connection state of the *workspace*, not of one sign-in.
+ *
+ * ## The defect this exists for
+ *
+ * `getConnectionStatus` above answers "is this stored Outlook account healthy?".
+ * That was the whole question while Microsoft sign-in was the only way in,
+ * because signing in and connecting a mailbox were one act — so the session
+ * always carried the account and reading it was reading the workspace.
+ *
+ * Google sign-in separated the two. A Google session legitimately has
+ * `session.outlookAccount === null`, so every caller that derived the badge from
+ * it reported "Not connected" for a workspace with healthy mailboxes attached.
+ * `/auth/status` and `requireMailbox` were moved onto `Mailbox` in Phase 13.2;
+ * `/dashboard` and `/account` were not, and kept reading the session. This is
+ * the same correction, applied to the three that were missed.
+ *
+ * ## Why the session account is still consulted
+ *
+ * Last, and only as a fallback. A Microsoft-authenticated installation whose
+ * mailboxes have not been materialised into `Mailbox` rows yet has nothing else
+ * to report from, and must keep reporting exactly what it always did. Where
+ * both exist the mailbox wins, because the mailbox is what actually sends.
+ *
+ * ## Multiple mailboxes
+ *
+ * One sendable mailbox is enough to be connected, and so are five. The count is
+ * reported alongside rather than folded into the status, so a caller that wants
+ * to say "Connected · 2 accounts" can, and one that does not is unaffected.
+ *
+ * @param {object}   params
+ * @param {object}   params.user            The authenticated user's `_id`.
+ * @param {?object} [params.sessionAccount] `req.auth.outlookAccount`, or null.
+ * @returns {Promise<object>} The same shape `getConnectionStatus` returns, plus
+ *   `mailboxCount` and `connectedMailboxCount`.
+ */
+export async function resolveConnectionStatus({ user, sessionAccount = null }) {
+  /*
+   * Imported here rather than at module scope.
+   *
+   * `status.service` is imported by the health endpoint, which must answer
+   * before the provider module's own imports are worth paying for — and a
+   * static edge from here into the provider repository would make this file
+   * depend on the mailbox model to report that the database is up.
+   */
+  const { listMailboxes } = await import(
+    '../modules/provider/repositories/mailbox.repository.js'
+  )
+
+  let mailboxes = []
+  try {
+    mailboxes = await listMailboxes({ user })
+  } catch (error) {
+    /*
+     * An unreadable mailbox collection is not proof of no mailbox.
+     *
+     * Falling through to the session account is the honest answer here: it
+     * reports what we can still see rather than asserting "not connected",
+     * which is a claim this failure does not support.
+     */
+    log.warn('Could not read mailboxes for connection status', { error: error.message })
+    return { ...getConnectionStatus(sessionAccount), mailboxCount: null, connectedMailboxCount: null }
+  }
+
+  const counts = {
+    mailboxCount: mailboxes.length,
+    connectedMailboxCount: mailboxes.filter(
+      (mailbox) => mailbox.status === CONNECTION_STATUS.CONNECTED && !mailbox.disconnectedAt,
+    ).length,
+  }
+
+  // Nothing to report from — the session account is all there is.
+  if (mailboxes.length === 0) {
+    return { ...getConnectionStatus(sessionAccount), ...counts }
+  }
+
+  /*
+   * The mailbox this workspace would actually send through.
+   *
+   * `listMailboxes` already returns the user's default first, then the
+   * connector's legacy flag, then newest — so the first sendable entry is the
+   * one `findDefaultMailbox` would resolve to. Describing a different mailbox
+   * from the one that sends is how a badge and a send path come to disagree.
+   */
+  const representative =
+    mailboxes.find(
+      (mailbox) => mailbox.status === CONNECTION_STATUS.CONNECTED && !mailbox.disconnectedAt,
+    ) ?? mailboxes[0]
+
+  /*
+   * `tokenExpiry` is deliberately unknown on this path.
+   *
+   * A `Mailbox` row holds no token — the credential lives on the account it was
+   * materialised from. `buildTokenExpiry(null)` reports nulls, which renders as
+   * a plain "Connected"; inventing an expiry to fill the field would put a
+   * "renewing soon" caption on a mailbox whose token we never looked at.
+   */
+  return {
+    status: representative.status,
+    connected: counts.connectedMailboxCount > 0,
+    email: representative.emailAddress ?? null,
+    scopes: sessionAccount?.scopes ?? [],
+    connectedAt: representative.connectedAt ?? null,
+    disconnectedAt: representative.disconnectedAt ?? null,
+    disconnectReason: representative.statusReason ?? null,
+    tokenExpiry: buildTokenExpiry(null),
+    ...counts,
+  }
+}
+
+/**
  * Describes an access-token expiry.
  *
  * Only timestamps and derived booleans are returned — never a token value.
@@ -239,6 +349,7 @@ export default {
   getBackendStatus,
   getDatabaseHealth,
   getConnectionStatus,
+  resolveConnectionStatus,
   getAuthenticationStatus,
   buildTokenExpiry,
   probeGraph,

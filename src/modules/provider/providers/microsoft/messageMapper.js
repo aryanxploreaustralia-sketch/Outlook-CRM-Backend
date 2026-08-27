@@ -12,7 +12,7 @@
  */
 
 import { FOLDERS } from '../../constants/folderTypes.js'
-import { sanitizeEmailHtml } from '../../../../utils/emailHtml.js'
+import { embedInlineImages, sanitizeEmailHtml } from '../../../../utils/emailHtml.js'
 
 /**
  * Graph `emailAddress` → `{ address, name }`.
@@ -141,6 +141,17 @@ export function toProviderMessage(message, folder = FOLDERS.INBOX) {
  * @returns {object}
  */
 export function toGraphMessage(message) {
+  /*
+   * Sanitise, then embed.
+   *
+   * In that order: the sanitiser permits `cid:` on an image, so a reference
+   * produced here survives it — but running it second would strip nothing and
+   * re-scan every base64 byte for no reason. Embedding turns any `data:` image
+   * into an inline attachment, which is the only form Gmail and Outlook
+   * actually render.
+   */
+  const body = embedInlineImages(sanitizeEmailHtml(message.bodyHtml ?? message.html ?? ''))
+
   const graph = {
     subject: message.subject ?? '',
     body: {
@@ -157,7 +168,7 @@ export function toGraphMessage(message) {
        * before this existed are still in the database, and a body assembled at
        * send time never went through a save at all.
        */
-      content: sanitizeEmailHtml(message.bodyHtml ?? message.html ?? ''),
+      content: body.html,
     },
     toRecipients: (message.to ?? []).map((recipient) => ({
       emailAddress: recipient.name
@@ -175,14 +186,22 @@ export function toGraphMessage(message) {
     graph.bccRecipients = message.bcc.map((r) => ({ emailAddress: { address: r.address } }))
   }
 
-  if (message.attachments?.length) {
-    graph.attachments = message.attachments.map((file) => ({
+  /*
+   * The caller's files and the body's inline images share one list — Graph
+   * carries both in `attachments`, and `isInline` is what separates a file the
+   * recipient sees listed from one the body refers to by Content-ID.
+   */
+  const attachments = [
+    ...(message.attachments ?? []).map((file) => ({
       '@odata.type': '#microsoft.graph.fileAttachment',
       name: file.name,
       contentType: file.contentType ?? 'application/octet-stream',
       contentBytes: file.contentBytes,
-    }))
-  }
+    })),
+    ...body.attachments,
+  ]
+
+  if (attachments.length) graph.attachments = attachments
 
   if (message.importance) graph.importance = message.importance
 

@@ -41,6 +41,7 @@
     "test:lead-full-edit": "node scripts/test-lead-full-edit.mjs",
     "test:lead-assignment": "node scripts/test-lead-assignment.mjs",
     "test:google-relink": "node scripts/test-google-identity-relink.mjs",
+    "test:signature-inline": "node scripts/test-signature-inline.mjs",
     "verify:travel-soon": "node scripts/verify-travel-soon.mjs",
     "verify:calendar": "node scripts/verify-calendar.mjs",
     "audit:lead-ownership": "node scripts/audit-lead-ownership.mjs"

@@ -23,6 +23,7 @@
  */
 
 import crypto from 'node:crypto'
+import { embedInlineImages } from '../utils/emailHtml.js'
 
 import { config } from '../config/index.js'
 import { MAIL_STATUS } from '../constants/mailStatus.js'
@@ -99,11 +100,20 @@ const toGraphRecipients = (recipients) =>
  * @returns {object}
  */
 export function buildGraphMessage(payload) {
-  const html =
+  const composed =
     payload.html?.trim() !== ''
       ? payload.html
       : // Escaped, or a plain-text body containing "<" would silently become markup.
         `<p>${escapeHtml(payload.text ?? '').replace(/\n/g, '<br>')}</p>`
+
+  /*
+   * Embedded pictures become inline attachments before the body is sent.
+   *
+   * A body with no `data:` image passes through untouched and produces no
+   * attachments, so every message that worked before this existed produces the
+   * identical payload.
+   */
+  const { html, attachments: inlineAttachments } = embedInlineImages(composed)
 
   const message = {
     subject: payload.subject ?? '',
@@ -116,14 +126,25 @@ export function buildGraphMessage(payload) {
   if (payload.cc?.length) message.ccRecipients = toGraphRecipients(payload.cc)
   if (payload.bcc?.length) message.bccRecipients = toGraphRecipients(payload.bcc)
 
-  if (payload.attachments?.length) {
-    message.attachments = payload.attachments.map((file) => ({
-      '@odata.type': '#microsoft.graph.fileAttachment',
-      name: file.name,
-      contentType: file.contentType,
-      contentBytes: file.contentBytes,
-    }))
-  }
+  /*
+   * The reader's attachments and the body's inline images share one list.
+   *
+   * Graph carries both in `attachments`; `isInline` is what separates a file
+   * the recipient sees listed from one the body refers to by Content-ID. The
+   * user's files keep their original order and are unchanged — the inline
+   * images are appended, never substituted for them.
+   */
+  const userAttachments = (payload.attachments ?? []).map((file) => ({
+    '@odata.type': '#microsoft.graph.fileAttachment',
+    name: file.name,
+    contentType: file.contentType,
+    contentBytes: file.contentBytes,
+  }))
+
+  const attachments = [...userAttachments, ...inlineAttachments]
+
+  // Omitted rather than sent empty, for the same reason as the recipients above.
+  if (attachments.length) message.attachments = attachments
 
   return message
 }

@@ -153,3 +153,94 @@ export function sanitizeEmailHtml(html) {
 }
 
 export default sanitizeEmailHtml
+
+/**
+ * Extensions for the image types a signature realistically carries.
+ *
+ * Only used to name the attachment; the `contentType` sent to Graph is the one
+ * declared by the data URI, never a guess. `jpg` is normalised to `jpeg`
+ * because that is the registered media type, and some editors emit the short
+ * form.
+ */
+const IMAGE_EXTENSION = Object.freeze({
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+  'image/svg+xml': 'svg',
+})
+
+/** Matches an `<img>` tag, so a `data:` URI elsewhere is left alone. */
+const IMG_TAG = /<img\b[^>]*>/gi
+
+/** Matches a base64 image data URI inside a `src` attribute. */
+const DATA_URI_SRC = /(\bsrc\s*=\s*)(["'])\s*data:(image\/[a-z0-9.+-]+)\s*;\s*base64\s*,([^"']*)\2/i
+
+/**
+ * Turns embedded images into inline attachments, and points the HTML at them.
+ *
+ * ## The bug this exists for
+ *
+ * A signature is composed in the browser, so an inserted picture arrives as
+ * `<img src="data:image/png;base64,…">`. That renders perfectly in the compose
+ * editor and is stored intact — and then the recipient sees nothing. Gmail
+ * refuses `data:` URIs in `<img src>` outright, and Outlook's Word-based
+ * renderer does not support them either, so the picture is dropped and the
+ * reader is left with the alt text or an empty box.
+ *
+ * The wire format every client does support is an inline attachment: the bytes
+ * travel with the message and the HTML refers to them by Content-ID. That is
+ * what this produces.
+ *
+ * ## What it deliberately does not touch
+ *
+ * `http(s)` sources, existing `cid:` references and non-image data URIs are all
+ * left exactly as they are — the first two already work, and the third has no
+ * business becoming an attachment.
+ *
+ * @param {string} html
+ * @returns {{ html: string, attachments: object[] }}
+ */
+export function embedInlineImages(html) {
+  if (typeof html !== 'string' || !html.includes('data:image/')) {
+    return { html: html ?? '', attachments: [] }
+  }
+
+  const attachments = []
+
+  const rewritten = html.replace(IMG_TAG, (tag) => {
+    const match = tag.match(DATA_URI_SRC)
+    if (!match) return tag
+
+    const [, prefix, quote, declaredType, rawBase64] = match
+
+    // Editors wrap long base64; Graph wants it unbroken.
+    const contentBytes = rawBase64.replace(/\s+/g, '')
+    if (contentBytes === '') return tag
+
+    const contentType = declaredType.toLowerCase() === 'image/jpg' ? 'image/jpeg' : declaredType.toLowerCase()
+
+    /*
+     * One Content-ID per image, numbered in document order.
+     *
+     * Reusing an id across images would make every one of them render as
+     * whichever the client resolved first — the failure the brief warns about.
+     */
+    const index = attachments.length + 1
+    const contentId = `signature-image-${index}`
+    const extension = IMAGE_EXTENSION[contentType] ?? 'img'
+
+    attachments.push({
+      '@odata.type': '#microsoft.graph.fileAttachment',
+      name: `${contentId}.${extension}`,
+      contentType,
+      contentBytes,
+      isInline: true,
+      contentId,
+    })
+
+    return tag.replace(DATA_URI_SRC, `${prefix}${quote}cid:${contentId}${quote}`)
+  })
+
+  return { html: rewritten, attachments }
+}

@@ -319,6 +319,29 @@ leadSchema.index({ owner: 1, contact: 1, quoteDate: -1 })
 /** The auto-mail queue: leads that still owe an introductory email. */
 leadSchema.index({ owner: 1, 'autoMail.status': 1, isDeleted: 1 })
 
+/**
+ * The incremental sync feed (offline-first Phase 2).
+ *
+ * Serves `find({ owner, updatedAt: { $gt: since } }).sort({ updatedAt: 1, _id: 1 })`
+ * — the query `/v1/sync/changes` runs on every poll from every client.
+ *
+ * The key order is forced by how MongoDB uses a compound index: `owner` is an
+ * equality match and must lead, `updatedAt` is both the range bound and the
+ * primary sort so it must come next, and `_id` is the tiebreak. Without `_id`
+ * *in* the index the tiebreak is an in-memory sort on every page; with it the
+ * whole cursor is served from the index.
+ *
+ * None of the twenty-six indexes above can do this job: each one puts a third
+ * field (`isDeleted`, `stage`, `quoteDate`) between `owner` and anything
+ * usable, and a range key cannot skip a field.
+ *
+ * Deliberately **not** filtered on `isDeleted`. A soft delete bumps
+ * `updatedAt`, so the feed carries it and the client learns to drop the record
+ * — a partial index excluding deleted rows would hide exactly the change the
+ * client most needs to see.
+ */
+leadSchema.index({ owner: 1, updatedAt: 1, _id: 1 }, { name: 'lead_sync_feed' })
+
 /*
  * The follow-up queue.
  *

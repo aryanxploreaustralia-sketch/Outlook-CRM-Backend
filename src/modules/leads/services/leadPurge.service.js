@@ -37,6 +37,7 @@ import { Company } from '../../../models/company.model.js'
 import { Contact } from '../../../models/contact.model.js'
 import { Lead } from '../../../models/lead.model.js'
 import { LeadTask } from '../../../models/leadTask.model.js'
+import { recordPurge, TOMBSTONE_ENTITY } from '../../sync/services/tombstone.service.js'
 import { createContextLogger } from '../../../utils/logger.js'
 
 const log = createContextLogger('leads')
@@ -128,6 +129,24 @@ export async function purgeLeads({ owner }) {
     ConversationMessage.updateMany({ owner, lead: { $ne: null } }, { $set: { lead: null } }),
     ConversationAttachment.updateMany({ owner, lead: { $ne: null } }, { $set: { lead: null } }),
   ])
+
+  /*
+   * A tombstone, before the delete.
+   *
+   * This is a *physical* removal, so the documents leave no `updatedAt` behind
+   * for an offline client to notice. Without this row, a client that had
+   * synchronised these enquiries would display them forever.
+   *
+   * Written first, and deliberately: a tombstone for records that survive is
+   * harmless — the next sync sends them again — whereas a deletion with no
+   * tombstone is invisible for good. And `recordPurge` never throws, so a sync
+   * collection having a bad day cannot stop a deletion the user asked for.
+   */
+  await recordPurge({
+    entityType: TOMBSTONE_ENTITY.LEAD,
+    owner,
+    reason: 'All leads deleted from the register',
+  })
 
   // --- 4. The leads themselves ---------------------------------------------
   //

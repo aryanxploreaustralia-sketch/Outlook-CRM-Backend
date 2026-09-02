@@ -27,6 +27,7 @@ import { companyRouter, leadRouter } from '../../modules/leads/routes/lead.route
 import conversationRoutes from '../../modules/conversations/routes/conversation.routes.js'
 import notificationCentreRoutes from '../../modules/notifications/routes/notification.routes.js'
 import searchRoutes from '../../modules/search/routes/search.routes.js'
+import syncRoutes from '../../modules/sync/routes/sync.routes.js'
 import { goalRouter, taskRouter } from '../../modules/tasks/routes/task.routes.js'
 import schedulerRoutes from '../../modules/scheduler/routes/scheduler.routes.js'
 import templateRoutes from '../../modules/templates/routes/template.routes.js'
@@ -109,6 +110,19 @@ router.use('/notifications', notificationCentreRoutes)
  * cannot read is never queried.
  */
 router.use('/search', searchRoutes)
+
+/**
+ * Offline-first Phase 2 — the incremental change feed.
+ *
+ * Additive by construction. It reads the same collections the modules above
+ * own, through the same owner scoping, and writes to none of them — so it can
+ * be added without touching any of them, and removing this line removes the
+ * feature entirely.
+ *
+ * Registered before `/admin` for the same reason the others are: this is a
+ * user-facing surface, scoped to the caller.
+ */
+router.use('/sync', syncRoutes)
 
 // Phase 14.2 — the Enterprise Admin Platform, read side.
 //

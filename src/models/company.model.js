@@ -169,6 +169,13 @@ companySchema.index({ owner: 1, isDeleted: 1, leadCount: -1 })
 /** Alphabetical list. */
 companySchema.index({ owner: 1, isDeleted: 1, companyName: 1 })
 
+/**
+ * The incremental sync feed (offline-first Phase 2).
+ *
+ * Same shape and the same reasoning as `lead_sync_feed` — see `lead.model.js`.
+ */
+companySchema.index({ owner: 1, updatedAt: 1, _id: 1 }, { name: 'company_sync_feed' })
+
 /** Global search. */
 companySchema.index(
   { companyName: 'text', aliases: 'text', city: 'text' },

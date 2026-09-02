@@ -45,6 +45,8 @@
     "diagnose:signature": "node scripts/diagnose-signature.mjs",
     "verify:travel-soon": "node scripts/verify-travel-soon.mjs",
     "verify:calendar": "node scripts/verify-calendar.mjs",
+    "verify:sync": "node scripts/verify-sync-api.mjs",
+    "verify:sync-destructive": "node scripts/verify-sync-destructive.mjs",
     "audit:lead-ownership": "node scripts/audit-lead-ownership.mjs"
   },
   "keywords": [

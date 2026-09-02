@@ -141,6 +141,24 @@ async function probeScheduler() {
   const lastRunAt = view.lastRun?.at ?? null
   const lastStatus = view.lastRun?.status ?? null
 
+  /*
+   * Whether the run is actually *happening*, not merely configured to.
+   *
+   * The three checks below all read stored intent — elected, enabled, and how
+   * the last run ended. None of them notices a process that has stopped: the
+   * clock never ticks, `lastRun.at` simply ages, and the probe went on
+   * reporting HEALTHY because `enabled` was still true. A scheduler that has
+   * not fired for a week looked exactly like one that fired this morning.
+   *
+   * `probeReplySync` already guards against this with a multiple of its own
+   * interval; this is the same rule for a run whose interval is a day. The
+   * threshold is generous — 36 hours, not 24 — so a run that slips past
+   * midnight, or a timezone an hour either side of the server's, does not
+   * raise a warning on its own.
+   */
+  const STALE_AFTER_MS = 36 * 60 * 60 * 1000
+  const stale = lastRunAt && Date.now() - new Date(lastRunAt).getTime() > STALE_AFTER_MS
+
   let state = HEALTH_STATE.HEALTHY
   let detail = `Enabled. Next run ${view.nextRunAt ? new Date(view.nextRunAt).toISOString() : 'not scheduled'} (${view.timezone}).`
 
@@ -150,6 +168,20 @@ async function probeScheduler() {
   } else if (lastStatus === 'failed') {
     state = HEALTH_STATE.WARNING
     detail = `The last run failed: ${view.lastRun?.message ?? 'no reason recorded'}.`
+  } else if (stale) {
+    /*
+     * Deliberately not OFFLINE. This cannot distinguish a stopped process from
+     * a deployment that simply has not reached its first run, and claiming the
+     * scheduler is down when it may be minutes from firing would be its own
+     * kind of wrong answer.
+     */
+    state = HEALTH_STATE.WARNING
+    detail =
+      `Enabled, but the last run was ${ago(lastRunAt)} — longer than a day. ` +
+      'Check that the API process is running.'
+  } else if (!lastRunAt) {
+    state = HEALTH_STATE.UNKNOWN
+    detail = 'Enabled, but no run has been recorded yet.'
   }
 
   return healthComponentDTO({

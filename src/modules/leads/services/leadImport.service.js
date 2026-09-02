@@ -315,8 +315,81 @@ export async function importSheet({
 export async function rollbackImport({ owner, importJob }) {
   const { Company } = await import('../../../models/company.model.js')
   const { Contact } = await import('../../../models/contact.model.js')
+  const tombstones = await import('../../sync/services/tombstone.service.js').catch(() => null)
 
-  const leads = await Lead.deleteMany({ owner, importJob })
+  /**
+   * Records that these enquiries are about to be removed physically.
+   *
+   * A rollback deletes documents outright, so nothing is left carrying an
+   * `updatedAt` for an offline client to notice — the enquiries would simply
+   * stay in its cache for good. Naming the ids first is the only moment they
+   * still exist to be named.
+   *
+   * ## Why the whole step is inside one guard
+   *
+   * `recordDeletions` never throws, but the two things that *feed* it can: the
+   * `Lead.find` below, and the dynamic import above. Leaving those bare made
+   * this rollback fail in cases where it used to succeed — a sync feature
+   * breaking a destructive operation the user asked for, which is exactly
+   * backwards. Nothing in this step may reach the caller.
+   *
+   * ## And why a failure falls back to a purge
+   *
+   * Silently skipping the tombstone would leave the deletion invisible to every
+   * offline client. A purge tombstone is one tiny write that says
+   * "resynchronise leads from scratch" — less precise than a list of ids, and a
+   * strict superset of it, so the deletion still reaches the client.
+   */
+  const recordRemoval = async (ids) => {
+    if (!tombstones) return
+    try {
+      await tombstones.recordDeletions({
+        entityType: tombstones.TOMBSTONE_ENTITY.LEAD,
+        entityIds: ids,
+        owner,
+        reason: 'Import rolled back',
+      })
+    } catch {
+      await tombstones.recordPurge({
+        entityType: tombstones.TOMBSTONE_ENTITY.LEAD,
+        owner,
+        reason: 'Import rolled back — ids could not be recorded',
+      })
+    }
+  }
+
+  try {
+    const doomed = await Lead.find({ owner, importJob }).select('_id').lean()
+    await recordRemoval(doomed.map((row) => row._id))
+  } catch {
+    // Could not even read the ids. Fall back to the superset.
+    await tombstones?.recordPurge({
+      entityType: tombstones.TOMBSTONE_ENTITY.LEAD,
+      owner,
+      reason: 'Import rolled back — ids could not be read',
+    })
+  }
+
+  /*
+   * A tombstone now exists for records that are still present, so a failure
+   * here would leave clients deleting enquiries the server still holds — and
+   * an incremental sync would never resend them, because their `updatedAt` is
+   * older than the client's cursor. A purge repairs exactly that: it tells the
+   * client to rebuild the entity, which restores anything wrongly dropped.
+   *
+   * The error is rethrown, so the caller sees the same failure it always did.
+   */
+  let leads
+  try {
+    leads = await Lead.deleteMany({ owner, importJob })
+  } catch (error) {
+    await tombstones?.recordPurge({
+      entityType: tombstones.TOMBSTONE_ENTITY.LEAD,
+      owner,
+      reason: 'Import rollback failed after tombstones were written',
+    })
+    throw error
+  }
 
   const candidateContacts = await Contact.find({ owner, importJob, isDeleted: false }).select('_id')
 

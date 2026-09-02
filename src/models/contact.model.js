@@ -408,6 +408,15 @@ contactSchema.index({ owner: 1, tags: 1, isDeleted: 1 })
 contactSchema.index({ owner: 1, source: 1, isDeleted: 1 })
 
 /**
+ * The incremental sync feed (offline-first Phase 2).
+ *
+ * Same shape and the same reasoning as `lead_sync_feed` — see `lead.model.js`
+ * for why `owner`, then `updatedAt`, then `_id`, and why it is not filtered on
+ * `isDeleted`.
+ */
+contactSchema.index({ owner: 1, updatedAt: 1, _id: 1 }, { name: 'contact_sync_feed' })
+
+/**
  * Full-text search across the fields a user would search by.
  *
  * Weighted so a name match outranks a note that happens to mention the word —

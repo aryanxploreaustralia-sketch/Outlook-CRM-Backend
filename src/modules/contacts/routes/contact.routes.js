@@ -8,6 +8,7 @@ import { Router } from 'express'
 import rateLimit from 'express-rate-limit'
 
 import { requireAuth } from '../../../middlewares/authenticate.js'
+import { idempotent } from '../../../middlewares/idempotency.js'
 import { ERROR_CODES } from '../../../constants/errorCodes.js'
 import { HTTP_STATUS } from '../../../constants/httpStatus.js'
 import { providerErrorBoundary } from '../../provider/middleware/providerErrorBoundary.js'
@@ -62,10 +63,10 @@ contactRouter.post('/export', heavyLimiter, contacts.exportFile)
 contactRouter.post('/bulk', contacts.bulk)
 
 contactRouter.get('/', contacts.list)
-contactRouter.post('/', contacts.create)
+contactRouter.post('/', idempotent(), contacts.create)
 
 contactRouter.get('/:id', contacts.getById)
-contactRouter.put('/:id', contacts.update)
+contactRouter.put('/:id', idempotent(), contacts.update)
 contactRouter.delete('/:id', contacts.remove)
 contactRouter.post('/:id/restore', contacts.restore)
 contactRouter.post('/:id/merge', contacts.merge)

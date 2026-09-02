@@ -9,6 +9,7 @@ import express, { Router } from 'express'
 import rateLimit from 'express-rate-limit'
 
 import { requireAuth } from '../../../middlewares/authenticate.js'
+import { idempotent } from '../../../middlewares/idempotency.js'
 import { requireAllPermissions, requirePermission } from '../../../middlewares/authorise.js'
 import { PERMISSIONS } from '../../../constants/permissions.js'
 import { ERROR_CODES } from '../../../constants/errorCodes.js'
@@ -149,10 +150,10 @@ leadRouter.get('/', controller.list)
  * Registered after every literal path and before `/:id`, matching the ordering
  * discipline the rest of this router follows.
  */
-leadRouter.post('/', controller.create)
+leadRouter.post('/', idempotent(), controller.create)
 
 leadRouter.get('/:id', controller.getById)
-leadRouter.put('/:id', controller.update)
+leadRouter.put('/:id', idempotent(), controller.update)
 
 /*
  * The whole record — enquiry, contact and company — in one save.
@@ -161,7 +162,7 @@ leadRouter.put('/:id', controller.update)
  * above. Same guard: the handler loads the enquiry through `loadLead`, and the
  * contact and company ids come off that document rather than out of the body.
  */
-leadRouter.put('/:id/full', controller.updateFull)
+leadRouter.put('/:id/full', idempotent(), controller.updateFull)
 leadRouter.delete('/:id', controller.remove)
 
 // ---------------------------------------------------------------------------
@@ -172,7 +173,7 @@ companyRouter.use(requireAuth)
 
 companyRouter.get('/', controller.listCompanies)
 companyRouter.get('/:id', controller.getCompany)
-companyRouter.put('/:id', controller.updateCompany)
+companyRouter.put('/:id', idempotent(), controller.updateCompany)
 
 /*
  * Deletion is guarded; reading and editing are not.

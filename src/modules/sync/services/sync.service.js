@@ -274,7 +274,23 @@ export async function buildChangeFeed({
        */
       records: rows.map((row) => {
         const { model, dto } = ENTITIES[entity]
-        return model.hydrate(row)[dto]()
+
+        /*
+         * `isDeleted` is stamped on, because no DTO carries it.
+         *
+         * A soft delete travels in this feed by design — it bumps `updatedAt`,
+         * so the row arrives like any other change and needs no tombstone. But
+         * `toSummaryJSON` and `toPublicJSON` both omit the flag, so a client
+         * caching those could not tell a deleted record from a live one and
+         * would show it in an offline register. The online list endpoints
+         * exclude deleted rows with `isDeleted: false`; a cache has to be able
+         * to do the same.
+         *
+         * Added here rather than to the DTOs themselves: those are rendered by
+         * the existing online pages, and this is the only consumer that needs
+         * the flag.
+         */
+        return { ...model.hydrate(row)[dto](), isDeleted: Boolean(row.isDeleted) }
       }),
       deleted,
       /*

@@ -163,7 +163,7 @@ leadRouter.put('/:id', idempotent(), controller.update)
  * contact and company ids come off that document rather than out of the body.
  */
 leadRouter.put('/:id/full', idempotent(), controller.updateFull)
-leadRouter.delete('/:id', controller.remove)
+leadRouter.delete('/:id', idempotent(), controller.remove)
 
 // ---------------------------------------------------------------------------
 
@@ -195,6 +195,6 @@ companyRouter.delete(
   express.json({ limit: '64kb' }),
   controller.deleteCompanies,
 )
-companyRouter.delete('/:id', requirePermission(PERMISSIONS.LEADS_DELETE), controller.deleteCompany)
+companyRouter.delete('/:id', requirePermission(PERMISSIONS.LEADS_DELETE), idempotent(), controller.deleteCompany)
 
 export default leadRouter

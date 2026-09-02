@@ -9,6 +9,7 @@ import { HTTP_STATUS } from '../../../constants/httpStatus.js'
 import { ApiError } from '../../../utils/ApiError.js'
 import { asyncHandler } from '../../../utils/asyncHandler.js'
 import { sendSuccess } from '../../../utils/ApiResponse.js'
+import { claimVersion, expectedVersionOf } from '../../../utils/optimisticConcurrency.js'
 import { Contact } from '../../../models/contact.model.js'
 import { TRANSFER_FORMAT, TRANSFER_MIME_TYPES } from '../constants/contactConstants.js'
 import * as repository from '../repositories/contact.repository.js'
@@ -174,6 +175,21 @@ export const update = asyncHandler(async (req, res) => {
   const { id } = contactIdSchema.parse(req.params)
   const data = updateContactSchema.parse(req.body)
 
+  /*
+   * Phase 6 — the version check, when the client asked for one.
+   *
+   * The document is loaded owner-scoped here purely to establish that this
+   * caller may touch it before the claim runs; `repository.update` below then
+   * does its own owner-scoped load exactly as it always has, so the
+   * authorization rule still lives in one place.
+   */
+  const expected = expectedVersionOf(req)
+  if (expected) {
+    const existing = await Contact.findOne({ _id: id, owner: ownerOf(req), isDeleted: false })
+    if (!existing) throw ApiError.notFound('No contact with that id exists in your address book.')
+    await claimVersion({ Model: Contact, doc: existing, expected, entity: 'contacts' })
+  }
+
   const contact = await repository.update({ owner: ownerOf(req), id, data, updatedBy: ownerOf(req) })
 
   if (!contact) throw ApiError.notFound('No contact with that id exists in your address book.')
@@ -192,6 +208,13 @@ export const update = asyncHandler(async (req, res) => {
  */
 export const remove = asyncHandler(async (req, res) => {
   const { id } = contactIdSchema.parse(req.params)
+
+  const expected = expectedVersionOf(req)
+  if (expected) {
+    const existing = await Contact.findOne({ _id: id, owner: ownerOf(req), isDeleted: false })
+    if (!existing) throw ApiError.notFound('No contact with that id exists in your address book.')
+    await claimVersion({ Model: Contact, doc: existing, expected, entity: 'contacts' })
+  }
 
   const contact = await repository.softDelete({ owner: ownerOf(req), id, updatedBy: ownerOf(req) })
 

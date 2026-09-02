@@ -11,6 +11,7 @@ import { HTTP_STATUS } from '../../../constants/httpStatus.js'
 import { ApiError } from '../../../utils/ApiError.js'
 import { asyncHandler } from '../../../utils/asyncHandler.js'
 import { sendSuccess } from '../../../utils/ApiResponse.js'
+import { claimVersion, expectedVersionOf } from '../../../utils/optimisticConcurrency.js'
 import { recordAudit } from '../../audit/services/auditRecorder.service.js'
 import { Company } from '../../../models/company.model.js'
 import { Contact } from '../../../models/contact.model.js'
@@ -631,7 +632,8 @@ export const updateFull = asyncHandler(async (req, res) => {
   // payload is known to be acceptable.
   const payload = fullUpdateSchema.parse(req.body)
 
-  const lead = await loadLead(req, { anyOwner: true })
+  let lead = await loadLead(req, { anyOwner: true })
+  lead = await claimVersion({ Model: Lead, doc: lead, expected: expectedVersionOf(req), entity: 'leads' })
 
   /*
    * The linked records, scoped to the *enquiry's* owner rather than the
@@ -734,8 +736,17 @@ export const updateFull = asyncHandler(async (req, res) => {
 
 /** PUT /api/v1/leads/:id */
 export const update = asyncHandler(async (req, res) => {
-  const lead = await loadLead(req, { anyOwner: true })
+  let lead = await loadLead(req, { anyOwner: true })
   const data = updateLeadSchema.parse(req.body)
+
+  /*
+   * Phase 6 — refuse a stale edit, atomically.
+   *
+   * Runs only when the client states which version it edited, so every existing
+   * online request behaves exactly as before. `loadLead` above has already
+   * settled authorization; this only settles the version.
+   */
+  lead = await claimVersion({ Model: Lead, doc: lead, expected: expectedVersionOf(req), entity: 'leads' })
 
   if (data.stage && data.stage !== lead.stage) {
     lead.moveToStage(data.stage, { by: ownerOf(req), reason: data.stageReason ?? 'Changed in the CRM' })
@@ -794,7 +805,9 @@ export const bulkStage = asyncHandler(async (req, res) => {
 
 /** DELETE /api/v1/leads/:id — soft delete. */
 export const remove = asyncHandler(async (req, res) => {
-  const lead = await loadLead(req)
+  let lead = await loadLead(req)
+  lead = await claimVersion({ Model: Lead, doc: lead, expected: expectedVersionOf(req), entity: 'leads' })
+
   lead.isDeleted = true
   await lead.save()
 
@@ -902,8 +915,10 @@ export const updateCompany = asyncHandler(async (req, res) => {
   const { id } = z.object({ id: objectId }).parse(req.params)
   const data = companyUpdateSchema.parse(req.body)
 
-  const company = await Company.findOne({ _id: id, owner: ownerOf(req), isDeleted: false })
+  let company = await Company.findOne({ _id: id, owner: ownerOf(req), isDeleted: false })
   if (!company) throw ApiError.notFound('No company with that id exists.')
+
+  company = await claimVersion({ Model: Company, doc: company, expected: expectedVersionOf(req), entity: 'companies' })
 
   for (const [field, value] of Object.entries(data)) company[field] = value
   await company.save()
@@ -930,8 +945,10 @@ export const updateCompany = asyncHandler(async (req, res) => {
 export const deleteCompany = asyncHandler(async (req, res) => {
   const { id } = z.object({ id: objectId }).parse(req.params)
 
-  const company = await Company.findOne({ _id: id, owner: ownerOf(req), isDeleted: false })
+  let company = await Company.findOne({ _id: id, owner: ownerOf(req), isDeleted: false })
   if (!company) throw ApiError.notFound('No company with that id exists.')
+
+  company = await claimVersion({ Model: Company, doc: company, expected: expectedVersionOf(req), entity: 'companies' })
 
   company.isDeleted = true
   await company.save()

@@ -67,7 +67,7 @@ contactRouter.post('/', idempotent(), contacts.create)
 
 contactRouter.get('/:id', contacts.getById)
 contactRouter.put('/:id', idempotent(), contacts.update)
-contactRouter.delete('/:id', contacts.remove)
+contactRouter.delete('/:id', idempotent(), contacts.remove)
 contactRouter.post('/:id/restore', contacts.restore)
 contactRouter.post('/:id/merge', contacts.merge)
 

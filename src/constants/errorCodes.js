@@ -18,6 +18,14 @@ export const ERROR_CODES = Object.freeze({
   NOT_FOUND: 'NOT_FOUND',
   ROUTE_NOT_FOUND: 'ROUTE_NOT_FOUND',
   CONFLICT: 'CONFLICT',
+
+  /**
+   * A mutation was written against a version of the record that has since
+   * changed. Distinct from CONFLICT so a client can tell "somebody edited this
+   * while you were offline" from every other kind of conflict, and hold the
+   * mutation for a person rather than retrying it.
+   */
+  VERSION_CONFLICT: 'VERSION_CONFLICT',
   DUPLICATE_KEY: 'DUPLICATE_KEY',
 
   RATE_LIMITED: 'RATE_LIMITED',

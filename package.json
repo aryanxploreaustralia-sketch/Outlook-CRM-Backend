@@ -47,7 +47,8 @@
     "verify:calendar": "node scripts/verify-calendar.mjs",
     "verify:sync": "node scripts/verify-sync-api.mjs",
     "verify:sync-destructive": "node scripts/verify-sync-destructive.mjs",
-    "audit:lead-ownership": "node scripts/audit-lead-ownership.mjs"
+    "audit:lead-ownership": "node scripts/audit-lead-ownership.mjs",
+    "verify:sync-cursor": "node scripts/verify-sync-cursor.mjs"
   },
   "keywords": [
     "outlook",

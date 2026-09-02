@@ -13,6 +13,26 @@
  *
  * That is the same discipline `ownerOf(req)` enforces across the CRM's existing
  * controllers, and it is deliberately spelled the same way.
+ *
+ * ## Why the cursors are flat query parameters
+ *
+ * They were once a nested object — `cursor[leads]=…`, which is what Axios emits
+ * for a nested `params` object. Express 5 defaults its query parser to
+ * `"simple"` (Node's `querystring`), which does not nest: the key arrived
+ * verbatim as the string `"cursor[leads]"`, Zod stripped it as unknown, and the
+ * schema's own default supplied an empty cursor set. Every request therefore
+ * read from the beginning of the feed, silently, while still handing back a
+ * `nextCursor` the client dutifully stored and could never spend.
+ *
+ * One flat parameter per entity removes the failure mode rather than
+ * compensating for it: `cursorLeads` survives every query parser there is,
+ * because there is nothing to parse. The alternative — switching the
+ * application to the `extended` parser — would have fixed this endpoint by
+ * changing how *every* endpoint reads its query string, which is a far larger
+ * blast radius than the bug warrants.
+ *
+ * The names are derived from `SYNC_ENTITIES` below rather than written out, so
+ * a fourth entity cannot arrive with its parameter missing.
  */
 
 import { z } from 'zod'
@@ -25,6 +45,18 @@ import { sendSuccess } from '../../../utils/ApiResponse.js'
 const ownerOf = (req) => req.auth.user._id
 
 /**
+ * The query parameter carrying one entity's cursor: `leads` → `cursorLeads`.
+ *
+ * Exported because the verification scripts build their requests with it. A
+ * test that spelled the parameter by hand could drift from the schema and still
+ * pass, which is precisely how the nested-cursor bug survived its own suite.
+ *
+ * @param {string} entity
+ * @returns {string}
+ */
+export const cursorParam = (entity) => `cursor${entity[0].toUpperCase()}${entity.slice(1)}`
+
+/**
  * `GET /v1/sync/changes`
  *
  * Note the absence of `owner`. Zod strips unknown keys, so `?owner=<someone>`
@@ -32,21 +64,15 @@ const ownerOf = (req) => req.auth.user._id
  * contact list endpoints rely on.
  */
 const changesQuerySchema = z.object({
-  /**
-   * Per-entity cursors, as `cursor.leads=…&cursor.contacts=…`.
+  /*
+   * One cursor per entity, flat: `?cursorLeads=…&cursorContacts=…`.
    *
-   * Express's default query parser expands dotted keys into an object, so this
-   * arrives already shaped. An absent entry means "from the beginning" for that
-   * entity, which is what makes a first sync and a resumed one the same call.
+   * An absent parameter means "from the beginning" for that entity, which is
+   * what makes a first sync and a resumed one the same call.
    */
-  cursor: z
-    .object({
-      leads: z.string().max(512).optional(),
-      contacts: z.string().max(512).optional(),
-      companies: z.string().max(512).optional(),
-    })
-    .optional()
-    .default({}),
+  ...Object.fromEntries(
+    service.SYNC_ENTITIES.map((entity) => [cursorParam(entity), z.string().max(512).optional()]),
+  ),
 
   /**
    * A wall-clock fallback, applied to any entity with no cursor.
@@ -69,6 +95,25 @@ const changesQuerySchema = z.object({
 })
 
 /**
+ * Collects the flat parameters back into the `{ leads, contacts, companies }`
+ * object the service takes.
+ *
+ * The internal shape is unchanged and deliberately so — only the HTTP
+ * representation was ever the problem. An empty string is dropped rather than
+ * forwarded, because `decodeCursor` rightly refuses one and a client that sent
+ * it means "from the beginning".
+ *
+ * @param {object} query Parsed query.
+ * @returns {Record<string, string>}
+ */
+const cursorsFrom = (query) =>
+  Object.fromEntries(
+    service.SYNC_ENTITIES
+      .map((entity) => [entity, query[cursorParam(entity)]])
+      .filter(([, cursor]) => typeof cursor === 'string' && cursor !== ''),
+  )
+
+/**
  * GET /api/v1/sync/changes
  *
  * Everything that changed for the signed-in user since their cursor.
@@ -80,7 +125,7 @@ export const getChanges = asyncHandler(async (req, res) => {
     // From the session. Never from `query`.
     owner: ownerOf(req),
     entities: query.entities ?? service.SYNC_ENTITIES,
-    cursors: query.cursor,
+    cursors: cursorsFrom(query),
     since: query.since ?? null,
     limit: query.limit,
   })
@@ -122,4 +167,4 @@ export const getStatus = asyncHandler(async (req, res) => {
   })
 })
 
-export default { getChanges, getStatus }
+export default { getChanges, getStatus, cursorParam }

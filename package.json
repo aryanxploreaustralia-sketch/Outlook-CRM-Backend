@@ -50,7 +50,8 @@
     "audit:lead-ownership": "node scripts/audit-lead-ownership.mjs",
     "verify:sync-cursor": "node scripts/verify-sync-cursor.mjs",
     "verify:idempotency": "node scripts/verify-idempotency.mjs",
-    "verify:concurrency": "node scripts/verify-concurrency.mjs"
+    "verify:concurrency": "node scripts/verify-concurrency.mjs",
+    "verify:rate-limit": "node scripts/verify-rate-limit.mjs"
   },
   "keywords": [
     "outlook",

@@ -14,6 +14,7 @@ import rateLimit from 'express-rate-limit'
 
 import { callback, login, logout, profile, status } from '../../controllers/auth.controller.js'
 import { loadSession, requireAuth } from '../../middlewares/authenticate.js'
+import { authStatusLimiter } from '../../middlewares/rateLimiter.js'
 import { ERROR_CODES } from '../../constants/errorCodes.js'
 import { HTTP_STATUS } from '../../constants/httpStatus.js'
 import microsoftAdminRoutes from '../../modules/auth-microsoft-admin/routes/adminAuth.routes.js'
@@ -76,7 +77,7 @@ router.use('/microsoft/admin', microsoftAdminRoutes)
 
 // `loadSession` rather than `requireAuth`: reporting "not signed in" is a
 // successful response that the web client needs on first load.
-router.get('/status', loadSession, status)
+router.get('/status', authStatusLimiter, loadSession, status)
 
 // Idempotent by design, so an already-anonymous caller still gets a 200.
 router.post('/logout', loadSession, logout)

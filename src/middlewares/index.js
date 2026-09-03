@@ -14,5 +14,5 @@ export {
 export { errorHandler } from './errorHandler.js'
 export { httpLogger } from './httpLogger.js'
 export { notFoundHandler } from './notFoundHandler.js'
-export { apiRateLimiter } from './rateLimiter.js'
+export { apiRateLimiter, authStatusLimiter } from './rateLimiter.js'
 export { requestContext } from './requestContext.js'

@@ -281,6 +281,21 @@ export async function inviteUser(input, actor) {
        */
       provider: 'google',
       role: input.role,
+      /**
+       * CRM availability, decided at creation rather than left to the default.
+       *
+       * The inviter's tick wins when they expressed one. With no preference,
+       * an owner is created for the admin console and gets the CRM only if
+       * asked for, while every other role is created *to work in* the CRM and
+       * would be useless without it.
+       *
+       * The schema's `default: true` still covers the accounts that predate
+       * this field; it is the create-time answer that differs by role.
+       */
+      userPanelAccess:
+        typeof input.userPanelAccess === 'boolean'
+          ? input.userPanelAccess
+          : input.role !== ROLES.OWNER,
       status: USER_STATUS.INVITED,
       ...statusFlags(USER_STATUS.INVITED),
       isDeleted: false,
@@ -457,6 +472,69 @@ export function suspendUser(id, actor) {
   return transition({ id, to: USER_STATUS.SUSPENDED, actor, event: USER_EVENT.SUSPENDED })
 }
 
+/**
+ * Grants or revokes access to the CRM itself.
+ *
+ * ## Why this is its own operation
+ *
+ * It is not a status transition and it is not a role change. `transition()`
+ * moves an account through the invited/active/suspended lifecycle, which is
+ * about whether somebody may sign in at all; this is about which surface they
+ * see once they have. Folding it into either would make one field mean two
+ * things, and the first person to suspend an account would silently revoke a
+ * CRM grant they never touched.
+ *
+ * The admin console is deliberately **not** consulted here. Whether the console
+ * opens is derived from the role matrix and nothing on this path can widen it —
+ * which is the property that keeps the two systems independent.
+ *
+ * Writes the field directly rather than through a full document save: no other
+ * value on the record is being changed, and `save()` would run the pre-save
+ * hooks for fields this operation has no opinion about.
+ *
+ * @param {string}  id
+ * @param {boolean} userPanelAccess
+ * @param {object}  actor  The administrator performing the change.
+ */
+export async function setUserPanelAccess({ id, userPanelAccess, actor }) {
+  const user = await User.findById(id)
+
+  if (!user || user.isDeleted === true) {
+    throw ApiError.notFound('That user does not exist.')
+  }
+
+  // Read through `!== false` for the same reason every other read does: an
+  // account created before the field exists has no value, and it has always
+  // behaved as permitted.
+  const from = user.userPanelAccess !== false
+
+  /**
+   * A no-op is reported, not written.
+   *
+   * Returning early keeps the audit log free of entries that record nothing —
+   * a log full of "changed X to X" is how the entry that mattered gets missed.
+   */
+  if (from === userPanelAccess) {
+    return { user: user.toPublicJSON(), from, to: userPanelAccess, changed: false }
+  }
+
+  await User.updateOne(
+    { _id: user._id },
+    { $set: { userPanelAccess, statusChangedAt: new Date(), statusChangedBy: actor._id } },
+  )
+
+  user.userPanelAccess = userPanelAccess
+
+  log.info('User Panel access changed', {
+    userId: String(user._id),
+    actorId: String(actor._id),
+    from,
+    to: userPanelAccess,
+  })
+
+  return { user: user.toPublicJSON(), from, to: userPanelAccess, changed: true }
+}
+
 /** Directory-wide counters, for the summary tiles. */
 export async function userDirectorySummary() {
   const [statusCounts, sessions] = await Promise.all([
@@ -472,6 +550,7 @@ export default {
   getUser,
   inviteUser,
   listUsers,
+  setUserPanelAccess,
   suspendUser,
   userDirectorySummary,
 }

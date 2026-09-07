@@ -142,6 +142,14 @@ export const AUDIT_EVENTS = Object.freeze({
   USER_ACTIVATED: { action: 'user.activated', category: USER, label: 'Activated a user', entityType: AUDIT_ENTITY.USER, severity: CRITICAL },
   USER_SUSPENDED: { action: 'user.suspended', category: USER, label: 'Suspended a user', entityType: AUDIT_ENTITY.USER, severity: CRITICAL },
   /**
+   * Whether the CRM itself is available to an account.
+   *
+   * `CRITICAL` alongside the other access decisions: it does not change what a
+   * role may do, but it changes which surface a person can reach at all, and
+   * "why can I no longer open the CRM" is a question the log has to answer.
+   */
+  USER_PANEL_ACCESS_CHANGED: { action: 'user.panel_access_changed', category: USER, label: "Changed a user's User Panel access", entityType: AUDIT_ENTITY.USER, severity: CRITICAL },
+  /**
    * Phase 15.2. A soft delete — the document is retained in full and every
    * lead, campaign and audit entry that references it stays intact. What the
    * person loses is access.

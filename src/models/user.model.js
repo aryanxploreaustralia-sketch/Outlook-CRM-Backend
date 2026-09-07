@@ -360,6 +360,28 @@ const userSchema = new Schema(
     isActive: { type: Boolean, default: true },
 
     /**
+     * Whether this account may open the CRM (the "User Panel").
+     *
+     * Deliberately **independent of role and permissions**. The admin console is
+     * gated by `roleMatrix.roleHasAdminAccess()` and always will be; this says
+     * only whether the CRM itself is offered, so an owner can be given the admin
+     * console alone, or both, without touching their role.
+     *
+     * Defaults to true, and every read goes through `!== false`, so the eight
+     * accounts written before this field existed keep exactly the access they
+     * have today. That matters more than it looks: a schema default is applied
+     * on create and **not** on read — the note on `status` below records the
+     * same trap — so a document with no value at all must still read as
+     * permitted. Revoking is therefore an explicit act, never a side effect of
+     * the field being introduced.
+     *
+     * New owners are the one exception, and the invitation service sets it
+     * explicitly rather than leaning on this default: an owner is created for
+     * the console, so the CRM is opt-in for them.
+     */
+    userPanelAccess: { type: Boolean, default: true },
+
+    /**
      * Soft deletion.
      *
      * Kept rather than removing the row, because sessions, leads, audit entries
@@ -585,6 +607,17 @@ userSchema.methods.toPublicJSON = function toPublicJSON() {
      * has to guess from a boolean that cannot express the difference.
      */
     status: this.status ?? USER_STATUS.ACTIVE,
+
+    /**
+     * Whether the CRM itself is available to this account.
+     *
+     * Additive, and read through `!== false` so a document that predates the
+     * field reports `true` — the value it has effectively had all along. This
+     * is what the web client routes on; it says nothing about the admin
+     * console, which is derived from the role matrix and served separately by
+     * `/admin/me/permissions`.
+     */
+    userPanelAccess: this.userPanelAccess !== false,
   }
 }
 

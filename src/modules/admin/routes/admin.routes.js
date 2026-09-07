@@ -187,6 +187,25 @@ router.patch(
 )
 
 /**
+ * Whether an account may open the CRM itself.
+ *
+ * Guarded on `users.activate` — the existing capability for granting somebody
+ * access, which is exactly what this is. Deliberately **not** a new permission:
+ * the roles that may already turn an account on are the roles that should
+ * decide which surface it reaches, and inventing a second grant would leave two
+ * lists to keep in step.
+ *
+ * The practical effect is the one that matters: `manager` holds no `users.*`
+ * permission at all, so no ordinary employee — including one who can reach the
+ * admin console — can grant themselves the CRM through this route.
+ */
+router.patch(
+  '/users/:id/user-panel-access',
+  requirePermission(PERMISSIONS.USERS_ACTIVATE),
+  controller.patchAdminUserPanelAccess,
+)
+
+/**
  * Employee profile and documents (Phase 17.1).
  *
  * Read is gated on `users.view` — the same capability that opens the directory,

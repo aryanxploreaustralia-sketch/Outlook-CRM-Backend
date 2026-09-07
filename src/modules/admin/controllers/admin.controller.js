@@ -75,6 +75,7 @@ import {
   getUser,
   inviteUser,
   listUsers,
+  setUserPanelAccess,
   suspendUser,
 } from '../services/adminUserAdmin.service.js'
 import { assignWorkbookToUser, deleteUserLeads } from '../services/adminUserLeads.service.js'
@@ -95,6 +96,7 @@ import {
   adminUserRoleSchema,
   microsoftIdentitySchema,
   objectIdSchema,
+  userPanelAccessSchema,
 } from '../validators/adminUser.validator.js'
 import {
   activityQuerySchema,
@@ -441,6 +443,45 @@ export const patchAdminUserActivate = asyncHandler(async (req, res) => {
 
   return sendSuccess(res, {
     message: `${result.user.email ?? 'The account'} is now active.`,
+    data: result,
+  })
+})
+
+/**
+ * PATCH /api/v1/admin/users/:id/user-panel-access
+ *
+ * Grants or revokes the CRM surface. The admin console is untouched by this and
+ * remains derived from the role matrix, so nothing here can widen what an
+ * account may administer.
+ */
+export const patchAdminUserPanelAccess = asyncHandler(async (req, res) => {
+  const { userPanelAccess } = userPanelAccessSchema.parse(req.body)
+
+  const result = await setUserPanelAccess({
+    id: objectIdSchema.parse(req.params.id),
+    userPanelAccess,
+    actor: req.auth.user,
+  })
+
+  // A request that changed nothing is still a success — the caller asked for a
+  // state and got it — but it is not an event, so it is not logged as one.
+  if (result.changed) {
+    await recordAudit({
+      req,
+      event: 'USER_PANEL_ACCESS_CHANGED',
+      summary: `${userPanelAccess ? 'Granted' : 'Revoked'} User Panel access for ${
+        result.user.email ?? 'an account'
+      }`,
+      target: { id: result.user.id, name: result.user.email },
+      performedFor: { _id: result.user.id, email: result.user.email },
+      metadata: { from: result.from, to: result.to },
+    })
+  }
+
+  return sendSuccess(res, {
+    message: userPanelAccess
+      ? `${result.user.email ?? 'The account'} can now open the User Panel.`
+      : `${result.user.email ?? 'The account'} can no longer open the User Panel.`,
     data: result,
   })
 })
@@ -1094,6 +1135,7 @@ export default {
   putAdminUserMicrosoftIdentity,
   patchAdminUserRole,
   patchAdminUserActivate,
+  patchAdminUserPanelAccess,
   patchAdminUserSuspend,
   postAdminUserInvite,
   postAdminUserLeadImport,

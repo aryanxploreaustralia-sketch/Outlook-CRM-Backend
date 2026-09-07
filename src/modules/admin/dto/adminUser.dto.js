@@ -57,6 +57,17 @@ export function userDirectoryDTO(user, extra = {}) {
     status,
     statusLabel: USER_STATUS_LABELS[status] ?? status,
 
+    /**
+     * Whether this account may open the CRM.
+     *
+     * Read through `!== false` so the accounts that predate the field report
+     * the access they actually have. Independent of `role` above: that decides
+     * the admin console, this decides the CRM, and the directory shows both
+     * because "why can this owner not open the CRM" is otherwise unanswerable
+     * from the screen.
+     */
+    userPanelAccess: user.userPanelAccess !== false,
+
     provider: user.provider ?? null,
 
     /**

@@ -182,6 +182,28 @@ export const adminUserInviteSchema = z.object({
   microsoftEmail: emailField.optional().nullable(),
 
   notes: z.string().trim().max(512, 'Notes are limited to 512 characters.').optional(),
+
+  /**
+   * Whether this person may open the CRM itself.
+   *
+   * Optional, so a client that predates the field — or an integration that
+   * never sends it — keeps working and gets the role-derived answer the
+   * service applies. Omission is a genuine "no preference" here, which is why
+   * it is not defaulted at the edge.
+   */
+  userPanelAccess: z.boolean().optional(),
+})
+
+/**
+ * `PATCH /admin/users/:id/user-panel-access`
+ *
+ * A single boolean, required. There is no sensible default for a request whose
+ * entire purpose is to state one — omitting it would have to mean either
+ * "grant" or "revoke", and guessing wrong on an access control is the kind of
+ * mistake that is only noticed by the person locked out.
+ */
+export const userPanelAccessSchema = z.object({
+  userPanelAccess: z.boolean({ message: 'Specify whether User Panel access is allowed.' }),
 })
 
 /**

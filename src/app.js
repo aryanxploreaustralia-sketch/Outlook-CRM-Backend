@@ -60,12 +60,34 @@ function buildCorsOptions() {
     },
     credentials: config.cors.credentials,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    /*
+     * Every header a browser is permitted to send cross-origin.
+     *
+     * The list is not decoration: a custom header forces a preflight, and the
+     * browser refuses to send the request at all if the header is missing from
+     * the response — before anything reaches this server. The failure surfaces
+     * on the client as a transport error with no HTTP status, which reads
+     * exactly like the API being down.
+     *
+     * That is precisely what happened to the offline write queue. Both headers
+     * below have been implemented server-side since the offline layer shipped
+     * — `middlewares/idempotency.js` reads `X-Client-Mutation-Id` and
+     * `utils/optimisticConcurrency.js` reads `X-Expected-Updated-At` — but
+     * neither was ever declared here. Online lead creation was unaffected,
+     * because the form sends neither header; only the queue's replay does. So
+     * every lead created offline was permanently unsyncable while the CRM
+     * looked healthy.
+     */
     allowedHeaders: ['Content-Type',
       'Authorization',
       'X-Request-Id',
       'X-Filename',
       'X-Import-Options',
-      'X-Document-Meta'],
+      'X-Document-Meta',
+      /** Idempotency key for a replayed offline mutation. */
+      'X-Client-Mutation-Id',
+      /** The version an offline edit was written against. */
+      'X-Expected-Updated-At'],
     exposedHeaders: ['X-Request-Id'],
     maxAge: 86_400,
   }

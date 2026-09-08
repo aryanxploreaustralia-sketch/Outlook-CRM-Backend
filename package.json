@@ -52,7 +52,8 @@
     "verify:idempotency": "node scripts/verify-idempotency.mjs",
     "verify:concurrency": "node scripts/verify-concurrency.mjs",
     "verify:rate-limit": "node scripts/verify-rate-limit.mjs",
-    "verify:panel-access": "node scripts/verify-panel-access.mjs"
+    "verify:panel-access": "node scripts/verify-panel-access.mjs",
+    "verify:cors-headers": "node scripts/verify-cors-headers.mjs"
   },
   "keywords": [
     "outlook",

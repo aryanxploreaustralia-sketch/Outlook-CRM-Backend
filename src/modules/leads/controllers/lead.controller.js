@@ -41,6 +41,7 @@ import {
 } from '../services/manualLead.service.js'
 import { resolveContext } from '../../provider/services/provider.service.js'
 import { recordUse, resolveActiveTemplate } from '../../templates/services/template.service.js'
+import { recordDeletions, TOMBSTONE_ENTITY } from '../../sync/services/tombstone.service.js'
 
 const ownerOf = (req) => req.auth.user._id
 const objectId = z.string().regex(/^[0-9a-f]{24}$/i, 'That is not a valid id.')
@@ -803,30 +804,100 @@ export const bulkStage = asyncHandler(async (req, res) => {
   })
 })
 
-/** DELETE /api/v1/leads/:id — soft delete. */
+/**
+ * DELETE /api/v1/leads/:id — physical delete.
+ *
+ * ## Why this is not a soft delete
+ *
+ * It was one, and the register could not recover from it: `isDeleted = true`
+ * leaves the document in the collection, and `referenceExists` — the pre-check
+ * `createLeadManually` runs — matched it. So deleting an enquiry and entering
+ * it again under the same reference was refused as a duplicate, with the
+ * blocking record invisible in every screen the user could open.
+ *
+ * Nothing depended on the row surviving. There is no restore path anywhere in
+ * the product, so a soft-deleted lead was unreachable rather than recoverable.
+ *
+ * This now matches "Delete all", which has always been physical
+ * (`leadPurge.service.js`), so the register has one deletion semantic instead
+ * of two.
+ *
+ * ## The tombstone is what makes it safe offline
+ *
+ * A soft delete reached other devices for free: it bumps `updatedAt`, so the
+ * `/v1/sync/changes` feed carried it and each client dropped the record. A
+ * physical delete leaves no `updatedAt` behind, so without the tombstone below
+ * a device that had already synchronised this enquiry would display it for
+ * ever.
+ *
+ * `recordDeletions` is the mechanism "Delete all" already uses and the sync
+ * feed already serves (`readTombstones`), which the offline client already
+ * applies (`applyDeletions`). No new delete or sync mechanism is introduced
+ * here, and the client needed no change.
+ *
+ * Written **before** the delete, and deliberately: a tombstone for a record
+ * that survives is harmless — the next sync sends it again — whereas a
+ * deletion with no tombstone is invisible for good. It never throws, so the
+ * sync collection cannot block a deletion the user asked for.
+ *
+ * ## What is deliberately left alone
+ *
+ * The linked contact and company survive; only the company's counters are
+ * refreshed, exactly as before. Correspondence, activity and task rows keep
+ * pointing at the removed id — the same state a soft delete left them in.
+ * Nothing populates a lead reference and every reader resolves a missing one
+ * to null, so they stay readable. Stage history and the auto-mail record are
+ * embedded and leave with the document.
+ */
 export const remove = asyncHandler(async (req, res) => {
   let lead = await loadLead(req)
   lead = await claimVersion({ Model: Lead, doc: lead, expected: expectedVersionOf(req), entity: 'leads' })
 
-  lead.isDeleted = true
-  await lead.save()
+  /*
+   * Captured before the delete. `lead` is a live document, and reading its
+   * reference out of a deleted record for the audit entry below is not
+   * something to rely on.
+   */
+  const leadId = lead._id
+  const reference = lead.reference
+  const stage = lead.stage ?? null
+  const companyId = lead.company
 
-  if (lead.company) {
-    const company = await Company.findById(lead.company)
+  await recordDeletions({
+    entityType: TOMBSTONE_ENTITY.LEAD,
+    entityIds: [leadId],
+    owner: lead.owner,
+    reason: 'Enquiry deleted from the register',
+  })
+
+  /*
+   * Scoped to the owner as well as the id. `loadLead` has already proved this
+   * caller may reach the record, so this is belt and braces — but a delete is
+   * the one operation where an over-broad filter cannot be walked back.
+   */
+  await Lead.deleteOne({ _id: leadId, owner: lead.owner })
+
+  // Unchanged: the company stays, its counters are brought back in step.
+  // `recount()` counts with a query, so it reads the same after a physical
+  // delete as it did after a soft one.
+  if (companyId) {
+    const company = await Company.findById(companyId)
     if (company) await company.recount()
   }
 
   await recordAudit({
     req,
     event: 'LEAD_DELETED',
-    summary: `Deleted the enquiry ${lead.reference}`,
-    target: { id: String(lead._id), name: lead.reference },
-    refs: { leadId: lead._id },
+    summary: `Deleted the enquiry ${reference}`,
+    target: { id: String(leadId), name: reference },
+    refs: { leadId },
     affectedCount: 1,
-    metadata: { soft: true, stage: lead.stage ?? null },
+    // `soft: false` — the audit entry outlives the document, so it has to say
+    // which kind of deletion it is recording.
+    metadata: { soft: false, stage },
   })
 
-  return sendSuccess(res, { message: 'Lead deleted.', data: { id: lead._id.toString(), deleted: true } })
+  return sendSuccess(res, { message: 'Lead deleted.', data: { id: leadId.toString(), deleted: true } })
 })
 
 // ---------------------------------------------------------------------------

@@ -94,9 +94,15 @@ async function highestNumber({ owner, prefix }) {
   const existing = await Lead.find({
     owner,
     reference: new RegExp(`^${prefix}\\d+$`),
-    // Deleted references still count. Re-issuing one would collide with the
-    // soft-deleted row the moment anybody restored it, and would make two
-    // different enquiries share a business key in the audit trail.
+    // Deleted references still count here, and only here. Automatic allocation
+    // continues the series past every number the register has ever issued, so
+    // two different enquiries never share a business key in the audit trail —
+    // which outlives the lead document itself.
+    //
+    // This is the opposite of `referenceExists`, deliberately: that one answers
+    // "may somebody type this reference in?", and a deleted enquiry must not
+    // block re-entering it. This one answers "what number comes next?", where
+    // skipping a retired number is free.
   })
     .select('reference')
     .lean()
@@ -150,9 +156,35 @@ export async function nextReference({ owner, market = DEFAULT_MARKET }) {
 }
 
 /**
- * Whether a reference is already in use by this workspace.
+ * Whether a reference is already in use by a **live** enquiry.
  *
- * Deleted leads are included, for the reason given in `highestNumber`.
+ * ## Deleted leads are excluded, and that is the whole point
+ *
+ * This used to match deleted rows too, on the reasoning quoted in
+ * `highestNumber` — that re-issuing a reference would collide with the deleted
+ * row if anybody restored it. There is no restore path in the product, so the
+ * collision it guarded against cannot happen, and the cost was real: deleting
+ * an enquiry and entering it again under the same reference was refused as a
+ * duplicate by a record no screen could show.
+ *
+ * The database agrees with this filter rather than with the old one. The
+ * unique index is `{ owner, reference }` with
+ * `partialFilterExpression: { isDeleted: false }` — so an insert reusing a
+ * deleted reference was always going to be accepted, and this pre-check was
+ * the only thing refusing it.
+ *
+ * It also matches the import path, which has always resolved existing
+ * references with `isDeleted: false` (`workbookCompare.service.js`).
+ *
+ * **Duplicate protection between live enquiries is unchanged.** Two active
+ * leads still cannot share a reference: this returns true for them, and the
+ * partial unique index refuses the insert regardless.
+ *
+ * `nextReference` and `highestNumber` are deliberately *not* changed. They
+ * allocate a brand-new number and keep counting deleted references, so
+ * automatic allocation never hands out a number the register has used before.
+ * That is a separate guarantee from "may this reference be entered by hand",
+ * and it costs nothing to keep.
  *
  * @returns {Promise<boolean>}
  */
@@ -160,7 +192,7 @@ export async function referenceExists({ owner, reference }) {
   const value = String(reference ?? '').trim().toUpperCase()
   if (!value) return false
 
-  return Boolean(await Lead.exists({ owner, reference: value }))
+  return Boolean(await Lead.exists({ owner, reference: value, isDeleted: false }))
 }
 
 export default { nextReference, referenceExists }

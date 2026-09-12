@@ -999,31 +999,43 @@ const sharingSchema = z.object({
 })
 
 /**
- * Refuses any id that is not a person an enquiry may be shared with.
+ * The one thing that disqualifies somebody from receiving a shared enquiry.
  *
- * The same rule `shareableUsers` lists by, in one place so the picker cannot
- * offer a value the write endpoints then reject — and so the single-enquiry and
- * bulk paths can never disagree about who is eligible. A grant to a deactivated
- * account would put a name in the share list that silently gives nobody access,
- * which is worse than an error.
+ * A deleted account, and nothing else.
+ *
+ * ## Why there is no eligibility rule beyond existence
+ *
+ * Who may *give* access and who may *receive* it are separate questions, and
+ * conflating them was the defect this replaced. Sharing is a colleague saying
+ * "look at this with me"; the recipient's role, their console permissions,
+ * their department and whether they have signed in yet are all irrelevant to
+ * that, and filtering on them made the picker silently omit most of the
+ * organization. Whether a recipient can *act* on the enquiry is still decided
+ * by the ordinary guards when they open it.
+ *
+ * `isDeleted` is the deleted-account concept on this model — a soft delete,
+ * kept because sessions, leads and audit entries reference users by id
+ * (`user.model.js`). `resolveStatus` reports such an account as `disabled`,
+ * labelled "Deleted". Granting one access would name a person in the share
+ * list who no longer exists, so it stays refused.
+ *
+ * Shared by the single-enquiry and bulk paths, so the two cannot drift.
  *
  * @param {string[]} ids Already deduplicated, and never including the owner.
  */
 async function assertShareableUsers(ids) {
   if (ids.length === 0) return
 
-  const eligible = await User.find({
+  const existing = await User.find({
     _id: { $in: ids },
-    status: USER_STATUS.ACTIVE,
     isDeleted: { $ne: true },
-    userPanelAccess: true,
   })
     .select('_id')
     .lean()
 
-  if (eligible.length !== ids.length) {
+  if (existing.length !== ids.length) {
     throw ApiError.badRequest(
-      'One or more of those users cannot be given access. They may have been deactivated — reopen the dialog to refresh the list.',
+      'One or more of those users no longer exists. Reopen the dialog to refresh the list.',
     )
   }
 }
@@ -1068,21 +1080,46 @@ function canBulkShare(req) {
  * and a payload of nothing but a name, an email and an id. It discloses no more
  * than the assignee picker a lead form already shows.
  *
- * Active, not deleted, and holding CRM access — sharing an enquiry with
- * somebody who cannot open the CRM would be a grant that does nothing.
+ * ## Everybody in the organization, minus deleted accounts
+ *
+ * No role, status, panel-access, department or team condition. It used to
+ * require `status: active` and `userPanelAccess: true`, and between them those
+ * two hid most of the organization from the picker — an account created by an
+ * administrator sits at `invited` until its first sign-in, and a console-first
+ * owner has the CRM switched off. Neither says anything about whether a
+ * colleague should be able to read an enquiry somebody chose to share with
+ * them, which is the only question this list answers.
+ *
+ * Who may *give* access is a separate rule and is unchanged: `canManageSharing`
+ * for one enquiry, `canBulkShare` for a whole register.
  */
 export const shareableUsers = asyncHandler(async (req, res) => {
   const users = await User.find({
-    status: USER_STATUS.ACTIVE,
+    // A deleted account and nothing else — see `assertShareableUsers` for why
+    // there is no role, status, panel-access, department or team condition
+    // here. Every colleague in the organization may receive a shared enquiry.
     isDeleted: { $ne: true },
-    userPanelAccess: true,
     // Not the caller: an enquiry is never "shared" with the person holding it,
-    // and offering the row invites a grant that reads as a no-op.
+    // and offering the row invites a grant that reads as a no-op. This is not
+    // an eligibility rule — the write paths drop the owner regardless.
     _id: { $ne: ownerOf(req) },
   })
+    // Exactly the three fields the picker renders. Everything else on the
+    // document — identity tokens, provider secrets, the password hash, the
+    // employee record — is excluded by naming what is wanted rather than by
+    // removing what is not.
     .select('displayName email')
     .sort({ displayName: 1 })
-    .limit(500)
+    /*
+     * Deliberately unbounded.
+     *
+     * The previous `.limit(500)` was not what truncated the list — the
+     * `status` and `userPanelAccess` conditions above it were — but a cap here
+     * can only ever hide colleagues from a picker whose whole job is to show
+     * all of them, and the collection it reads is one organization's staff.
+     * Searching happens in the dialog, over the complete list, so a partial
+     * response would make a search silently miss people.
+     */
     .lean()
 
   return sendSuccess(res, {

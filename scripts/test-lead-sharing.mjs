@@ -36,7 +36,16 @@ const USER_B = '000000000000000000000b01'    // shared
 const USER_C = '000000000000000000000c01'    // shared, later removed
 const USER_D = '000000000000000000000d01'    // never shared
 const ORG_OWNER = '000000000000000000000e01'  // role: owner
-const INACTIVE = '000000000000000000000f01'   // suspended account
+const INACTIVE = '000000000000000000000f01'   // suspended — must still be offered
+const ADMIN_U = '0000000000000000000a0001'    // role: admin
+const INVITED = '0000000000000000000a0002'    // created, never signed in
+const NO_PANEL = '0000000000000000000a0003'   // userPanelAccess: false
+const DISABLED_U = '0000000000000000000a0004' // status: disabled
+const OTHER_DEPT = '0000000000000000000a0005' // different department
+const EXTRA_1 = '0000000000000000000a0006'
+const EXTRA_2 = '0000000000000000000a0007'
+const EXTRA_3 = '0000000000000000000a0008'
+const DELETED_U = '0000000000000000000a0009'  // isDeleted — the ONLY exclusion
 const LEAD_ID = '000000000000000000001111'
 const COMPANY_ID = '000000000000000000003333'
 const CONTACT_ID = '000000000000000000002222'
@@ -71,6 +80,17 @@ function reset({ sharedWith = [] } = {}) {
     { _id: USER_C, displayName: 'Priya', email: 'c@x.com', role: ROLES.SALES, status: USER_STATUS.ACTIVE, userPanelAccess: true },
     { _id: USER_D, displayName: 'Amit', email: 'd@x.com', role: ROLES.SALES, status: USER_STATUS.ACTIVE, userPanelAccess: true },
     { _id: INACTIVE, displayName: 'Neha', email: 'f@x.com', role: ROLES.SALES, status: 'suspended', userPanelAccess: true },
+    { _id: ORG_OWNER, displayName: 'Owner O', email: 'o@x.com', role: ROLES.OWNER, status: USER_STATUS.ACTIVE, userPanelAccess: true },
+    { _id: ADMIN_U, displayName: 'Admin Ay', email: 'admin@x.com', role: ROLES.ADMIN, status: USER_STATUS.ACTIVE, userPanelAccess: true },
+    { _id: INVITED, displayName: 'Invited Ish', email: 'inv@x.com', role: ROLES.SALES, status: 'invited', userPanelAccess: true },
+    { _id: NO_PANEL, displayName: 'Console Cara', email: 'cc@x.com', role: ROLES.ADMIN, status: USER_STATUS.ACTIVE, userPanelAccess: false },
+    { _id: DISABLED_U, displayName: 'Disabled Dev', email: 'dd@x.com', role: ROLES.SUPPORT, status: 'disabled', userPanelAccess: true },
+    { _id: OTHER_DEPT, displayName: 'Finance Fay', email: 'ff@x.com', role: ROLES.VIEWER, status: USER_STATUS.ACTIVE, userPanelAccess: true, department: 'Finance' },
+    { _id: EXTRA_1, displayName: 'Extra One', email: 'e1@x.com', role: ROLES.SUPPORT, status: USER_STATUS.ACTIVE, userPanelAccess: true },
+    { _id: EXTRA_2, displayName: 'Extra Two', email: 'e2@x.com', role: ROLES.VIEWER, status: 'invited', userPanelAccess: false },
+    { _id: EXTRA_3, displayName: 'Extra Three', email: 'e3@x.com', role: ROLES.MEMBER, status: USER_STATUS.ACTIVE, userPanelAccess: true },
+    // The one account that must NEVER be offered or accepted.
+    { _id: DELETED_U, displayName: 'Deleted Dan', email: 'del@x.com', role: ROLES.SALES, status: 'disabled', userPanelAccess: true, isDeleted: true },
   ]
   audits = []
   deleteCalls = []
@@ -406,14 +426,29 @@ reset({ sharedWith: [USER_B, USER_C] })
   check('owner unchanged', String(rows[0].owner) === MANAGER)
 }
 
-console.log('\n16. Ineligible users are refused before anything is written')
+console.log('\n16. Only a deleted or non-existent account is refused')
 reset()
 {
-  const r = await call(controller.updateSharing, { ...asManager, ...P, body: { userIds: [USER_B, INACTIVE] } })
-  check('a suspended account is refused', !r.ok, r.ok ? 'IT WAS ALLOWED' : `${r.status}`)
-  check('400', r.status === 400, String(r.status))
+  // A suspended colleague is still a colleague. Sharing with them is allowed;
+  // what they can do on opening the enquiry is the ordinary guards' business.
+  const ok = await call(controller.updateSharing, { ...asManager, ...P, body: { userIds: [USER_B, INACTIVE] } })
+  check('a suspended account is accepted', ok.ok, ok.ok ? '' : ok.message)
+  check('both grants were stored', rows[0].sharedWith.length === 2, JSON.stringify(rows[0].sharedWith))
+
+  reset()
+  const bad = await call(controller.updateSharing, { ...asManager, ...P, body: { userIds: [USER_B, DELETED_U] } })
+  check('a deleted account IS refused', !bad.ok, bad.ok ? 'IT WAS ALLOWED' : `${bad.status}`)
+  check('400', bad.status === 400, String(bad.status))
   check('nothing was written — not even the valid half', rows[0].sharedWith.length === 0,
     JSON.stringify(rows[0].sharedWith))
+
+  reset()
+  const gone = await call(controller.updateSharing, { ...asManager, ...P, body: { userIds: ['0000000000000000000affff'] } })
+  check('an id matching no user is refused', !gone.ok, gone.ok ? 'IT WAS ALLOWED' : `${gone.status}`)
+
+  const malformed = await call(controller.updateSharing, { ...asManager, ...P, body: { userIds: ['not-an-id'] } })
+  check('a malformed id is rejected by the schema', !malformed.ok,
+    malformed.ok ? 'IT WAS ALLOWED' : `${malformed.status}`)
 }
 
 console.log('\n17. The organization owner keeps their existing access')
@@ -471,17 +506,63 @@ console.log('\n20. Backward compatibility: an enquiry with no sharedWith field')
   check('and is invisible to everybody else', matches(rows[0], other) === false)
 }
 
-console.log('\n21. The shareable-users list is eligible people only')
+console.log('\n21. The recipient list is EVERY CRM user, minus deleted accounts')
 reset()
 {
   const r = await call(controller.shareableUsers, { ...asManager })
-  const ids = (r.payload?.data?.items ?? []).map((u) => String(u.id))
+  const items = r.payload?.data?.items ?? []
+  const ids = items.map((u) => String(u.id))
+
   check('the list loads', r.ok, r.ok ? '' : r.message)
-  check('the suspended account is absent', ids.includes(INACTIVE) === false, ids.join(','))
+
+  // --- no role filter -----------------------------------------------------
+  check('SALES users appear', ids.includes(USER_B) && ids.includes(USER_C) && ids.includes(USER_D))
+  check('OWNER users appear', ids.includes(ORG_OWNER), ids.join(','))
+  check('ADMIN users appear', ids.includes(ADMIN_U))
+  check('SUPPORT users appear', ids.includes(EXTRA_1))
+  check('VIEWER users appear', ids.includes(OTHER_DEPT))
+  check('MEMBER users appear', ids.includes(EXTRA_3))
+
+  // --- no status filter ---------------------------------------------------
+  check('suspended accounts appear', ids.includes(INACTIVE))
+  check('invited (never signed in) accounts appear', ids.includes(INVITED))
+  check('disabled accounts appear', ids.includes(DISABLED_U))
+
+  // --- no userPanelAccess filter ------------------------------------------
+  check('userPanelAccess:false accounts appear', ids.includes(NO_PANEL))
+  check('a second no-panel, invited account appears', ids.includes(EXTRA_2))
+
+  // --- no department filter -----------------------------------------------
+  check('another department appears', ids.includes(OTHER_DEPT))
+
+  // --- the only two exclusions --------------------------------------------
+  check('the DELETED account is absent', ids.includes(DELETED_U) === false, ids.join(','))
   check('the caller is absent from their own list', ids.includes(MANAGER) === false)
-  check('eligible colleagues are present', ids.includes(USER_B) && ids.includes(USER_D))
-  check('it carries no role or status', Object.keys(r.payload?.data?.items?.[0] ?? {}).sort().join(',') === 'email,id,name',
-    Object.keys(r.payload?.data?.items?.[0] ?? {}).join(','))
+
+  // --- completeness -------------------------------------------------------
+  check('MORE THAN 7 users are returned', ids.length > 7, ids.length + ' returned')
+  check('every non-deleted user except the caller is present',
+    ids.length === people.filter((u) => u.isDeleted !== true && String(u._id) !== MANAGER).length,
+    ids.length + ' of ' + people.length + ' fixture users')
+
+  // --- payload shape ------------------------------------------------------
+  check('only id, name and email are returned',
+    Object.keys(items[0] ?? {}).sort().join(',') === 'email,id,name',
+    Object.keys(items[0] ?? {}).join(','))
+  check('no sensitive field leaks',
+    items.every((u) => !('password' in u) && !('googleId' in u) && !('role' in u) &&
+      !('status' in u) && !('userPanelAccess' in u) && !('refreshToken' in u)))
+}
+
+console.log('\n21b. A sales user sees the same complete list')
+reset()
+{
+  const r = await call(controller.shareableUsers, { ...asB })
+  const ids = (r.payload?.data?.items ?? []).map((u) => String(u.id))
+  check('more than 7 for them too', ids.length > 7, String(ids.length))
+  check('the manager appears in their list', ids.includes(MANAGER))
+  check('they are absent from their own list', ids.includes(USER_B) === false)
+  check('the deleted account is still absent', ids.includes(DELETED_U) === false)
 }
 
 console.log('\n22. The owner can read the current share list')
@@ -645,12 +726,23 @@ seedRegister()
   check('User D gained nothing', rows[0].sharedWith.every((id) => String(id) !== USER_D))
 }
 
-console.log('\n33. Ineligible users are refused before anything is written')
+console.log('\n33. Bulk: every role may receive; only a deleted account is refused')
 seedRegister()
 {
-  const r = await call(controller.bulkShare, { ...asManager, body: { userIds: [USER_B, INACTIVE] } })
-  check('a suspended account is refused', !r.ok, r.ok ? 'IT WAS ALLOWED' : `${r.status}`)
-  check('400', r.status === 400, String(r.status))
+  const r = await call(controller.bulkShare, {
+    ...asManager,
+    body: { userIds: [USER_B, INACTIVE, ADMIN_U, INVITED, NO_PANEL, DISABLED_U, OTHER_DEPT, EXTRA_1, EXTRA_3] },
+  })
+  check('nine recipients across every role and status are accepted', r.ok, r.ok ? '' : r.message)
+  check('all nine were applied', mine().every((l) => l.sharedWith.length === 9),
+    JSON.stringify(mine().map((l) => l.sharedWith.length)))
+  check('more than 7 recipients in one operation', (r.payload?.data?.userIds ?? []).length > 7,
+    String((r.payload?.data?.userIds ?? []).length))
+
+  seedRegister()
+  const bad = await call(controller.bulkShare, { ...asManager, body: { userIds: [USER_B, DELETED_U] } })
+  check('a deleted account IS refused', !bad.ok, bad.ok ? 'IT WAS ALLOWED' : String(bad.status))
+  check('400', bad.status === 400, String(bad.status))
   check('updateMany was never called', updateManyCalls.length === 0)
   check('not even the valid half was applied', mine().every((l) => l.sharedWith.length === 0))
 }

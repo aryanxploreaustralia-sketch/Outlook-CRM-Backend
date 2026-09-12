@@ -156,6 +156,23 @@ leadRouter.get('/assignees', controller.assignees)
  */
 leadRouter.get('/shareable-users', controller.shareableUsers)
 
+/*
+ * Sharing the whole register at once.
+ *
+ * Literal paths, registered here with the others and well before `/:id`, so
+ * "sharing" is never read as a lead id. They cannot collide with
+ * `/:id/sharing` further down either: that route's second segment must be the
+ * literal "sharing", and here it is "bulk".
+ *
+ * No permission guard on the route. The handler checks the caller's role and —
+ * far more importantly — scopes its update to `{ owner: <session user> }`, so
+ * the endpoint cannot reach another manager's enquiries however it is called.
+ * `idempotent()` on the write, matching every other mutation on this router,
+ * though the `$addToSet` underneath is idempotent on its own.
+ */
+leadRouter.get('/sharing/bulk', controller.bulkSharingPreview)
+leadRouter.put('/sharing/bulk', idempotent(), controller.bulkShare)
+
 leadRouter.get('/', controller.list)
 
 /**

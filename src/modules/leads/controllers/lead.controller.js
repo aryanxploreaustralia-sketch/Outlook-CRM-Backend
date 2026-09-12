@@ -999,6 +999,62 @@ const sharingSchema = z.object({
 })
 
 /**
+ * Refuses any id that is not a person an enquiry may be shared with.
+ *
+ * The same rule `shareableUsers` lists by, in one place so the picker cannot
+ * offer a value the write endpoints then reject — and so the single-enquiry and
+ * bulk paths can never disagree about who is eligible. A grant to a deactivated
+ * account would put a name in the share list that silently gives nobody access,
+ * which is worse than an error.
+ *
+ * @param {string[]} ids Already deduplicated, and never including the owner.
+ */
+async function assertShareableUsers(ids) {
+  if (ids.length === 0) return
+
+  const eligible = await User.find({
+    _id: { $in: ids },
+    status: USER_STATUS.ACTIVE,
+    isDeleted: { $ne: true },
+    userPanelAccess: true,
+  })
+    .select('_id')
+    .lean()
+
+  if (eligible.length !== ids.length) {
+    throw ApiError.badRequest(
+      'One or more of those users cannot be given access. They may have been deactivated — reopen the dialog to refresh the list.',
+    )
+  }
+}
+
+/**
+ * May this caller share their whole register at once?
+ *
+ * Managers, and the organization owner.
+ *
+ * ## Why a role check here, when nothing else in this module uses one
+ *
+ * Every other sharing decision is per-record — "is this your enquiry?" — and a
+ * role would be the wrong instrument for it. Bulk sharing has no single record
+ * to ask about: it is a statement about a person's whole register, and the
+ * product defines that as something a manager does with the team they run.
+ *
+ * It grants nothing on its own. The update below is scoped to `owner: me`
+ * whatever this returns, so a caller who somehow passed this check still
+ * reaches only their own enquiries. This decides who is *offered* the action,
+ * not what the action can touch.
+ *
+ * Deliberately excludes `ADMIN`: administrators manage the platform through the
+ * console and hold no cross-user lead access in this module today — see
+ * `canReachAnyLead` — and this must not become the place that quietly changes.
+ */
+function canBulkShare(req) {
+  const role = req.auth?.user?.role
+  return role === ROLES.MANAGER || role === ROLES.OWNER
+}
+
+/**
  * GET /api/v1/leads/shareable-users
  *
  * The people an enquiry may be shared with.
@@ -1121,22 +1177,7 @@ export const updateSharing = asyncHandler(async (req, res) => {
   // harmless client mistake look like a failure.
   const withoutOwner = requested.filter((id) => id !== String(lead.owner))
 
-  if (withoutOwner.length > 0) {
-    const eligible = await User.find({
-      _id: { $in: withoutOwner },
-      status: USER_STATUS.ACTIVE,
-      isDeleted: { $ne: true },
-      userPanelAccess: true,
-    })
-      .select('_id')
-      .lean()
-
-    if (eligible.length !== withoutOwner.length) {
-      throw ApiError.badRequest(
-        'One or more of those users cannot be given access. They may have been deactivated — reopen the dialog to refresh the list.',
-      )
-    }
-  }
+  await assertShareableUsers(withoutOwner)
 
   /*
    * What actually changed, computed before the write so the audit entry can
@@ -1176,6 +1217,139 @@ export const updateSharing = asyncHandler(async (req, res) => {
         ? 'This enquiry is no longer shared.'
         : `Shared with ${withoutOwner.length} user(s).`,
     data: { id: String(lead._id), sharedWith: withoutOwner },
+  })
+})
+
+/**
+ * GET /api/v1/leads/sharing/bulk
+ *
+ * What a bulk share would do, before anybody commits to it.
+ *
+ * Answers the two questions the register page has: may this person share their
+ * whole register, and how many enquiries would that touch. One
+ * `countDocuments` on an indexed `{ owner, isDeleted }` predicate — the same
+ * shape the dashboard's statistics already run — rather than a new aggregation.
+ *
+ * The count is the *owner's* register, which is deliberately not the number on
+ * the Leads page: that one now includes enquiries shared with the reader, and
+ * bulk sharing touches only what they own. Reusing the page's total would
+ * overstate the blast radius in the one dialog where that matters most.
+ */
+export const bulkSharingPreview = asyncHandler(async (req, res) => {
+  const owner = ownerOf(req)
+  const allowed = canBulkShare(req)
+
+  /*
+   * Not counted for somebody who may not do it. The flag is the answer, and a
+   * refused caller has no use for the number.
+   */
+  const leadCount = allowed ? await Lead.countDocuments({ owner, isDeleted: false }) : 0
+
+  return sendSuccess(res, {
+    message: 'Bulk sharing preview.',
+    data: { canBulkShare: allowed, leadCount },
+  })
+})
+
+/**
+ * PUT /api/v1/leads/sharing/bulk
+ *
+ * Grants a set of colleagues access to every enquiry this manager owns.
+ *
+ * ## The scope is the authorization
+ *
+ * The filter is `{ owner: <the session's user>, isDeleted: false }` and the
+ * owner is read from `req.auth`, never from the body — there is no `ownerId`
+ * parameter to send. So this endpoint cannot touch another manager's register
+ * however it is called, and a soft-deleted enquiry is left alone. The role
+ * check above decides who is offered the action; this filter decides what the
+ * action can reach, and it is the one that matters.
+ *
+ * ## Additive, never destructive
+ *
+ * `$addToSet` with `$each` adds the selected people and leaves everybody
+ * already on an enquiry exactly where they were. It also makes the operation
+ * idempotent by construction: running it twice adds nobody twice, and a user
+ * already shared on some enquiries is simply added to the rest. Nothing here
+ * removes a grant — un-sharing stays on the single-enquiry dialog, where the
+ * reader can see who they are removing.
+ *
+ * `owner` is not in the update, so ownership cannot change. Neither is any
+ * other field: this writes one array and nothing else.
+ */
+export const bulkShare = asyncHandler(async (req, res) => {
+  const { userIds } = sharingSchema.parse(req.body)
+
+  if (!canBulkShare(req)) {
+    throw ApiError.forbidden('Only a manager can share their whole register at once.')
+  }
+
+  const owner = ownerOf(req)
+
+  // Deduplicated here so the same id cannot be counted twice in the response,
+  // and the owner dropped so nobody is "shared" an enquiry they already hold.
+  const requested = [...new Set(userIds.map(String))]
+  const recipients = requested.filter((id) => id !== String(owner))
+
+  if (recipients.length === 0) {
+    throw ApiError.badRequest('Select at least one colleague to share your enquiries with.')
+  }
+
+  // Every id checked before a single document is written.
+  await assertShareableUsers(recipients)
+
+  const filter = { owner, isDeleted: false }
+
+  /*
+   * Counted separately from the update.
+   *
+   * `updateMany` reports `modifiedCount`, which counts only the documents that
+   * actually changed — so an enquiry where all the selected people were
+   * already shared is not counted. That is the right number for "what did this
+   * change", and the wrong one for "how many of my enquiries are now shared
+   * with them", which is what the operator asked. Both are returned.
+   */
+  const matchedCount = await Lead.countDocuments(filter)
+
+  const result = await Lead.updateMany(filter, {
+    $addToSet: { sharedWith: { $each: recipients } },
+  })
+
+  /*
+   * One audit entry for the whole operation, not one per enquiry.
+   *
+   * A manager with 3,000 enquiries would otherwise write 3,000 rows for a
+   * single click, which would bury every other entry in the log and tell a
+   * reader nothing that this one line does not.
+   */
+  await recordAudit({
+    req,
+    event: 'LEAD_SHARING_UPDATED',
+    summary: `Shared all ${matchedCount} of their enquiries with ${recipients.length} user(s)`,
+    target: { id: String(owner), name: `${matchedCount} enquiries` },
+    affectedCount: result.modifiedCount ?? 0,
+    metadata: {
+      bulk: true,
+      added: recipients,
+      matched: matchedCount,
+      modified: result.modifiedCount ?? 0,
+      // Recorded to make it evident in the log that ownership did not move.
+      owner: String(owner),
+    },
+  })
+
+  return sendSuccess(res, {
+    message:
+      matchedCount === 0
+        ? 'You have no enquiries to share yet.'
+        : `${matchedCount} lead(s) shared with ${recipients.length} user(s).`,
+    data: {
+      /** Enquiries the grant now covers — what the operator asked for. */
+      updatedCount: matchedCount,
+      /** Of those, how many actually changed. Zero on a repeat run. */
+      modifiedCount: result.modifiedCount ?? 0,
+      userIds: recipients,
+    },
   })
 })
 

@@ -47,6 +47,7 @@ let people = []
 let audits = []
 let deleteCalls = []
 let findQueries = []
+let updateManyCalls = []
 let companyWrites = []
 let contactWrites = []
 
@@ -74,6 +75,7 @@ function reset({ sharedWith = [] } = {}) {
   audits = []
   deleteCalls = []
   findQueries = []
+  updateManyCalls = []
   companyWrites = []
   contactWrites = []
 }
@@ -123,6 +125,36 @@ Lead.deleteOne = async (filter) => {
 Lead.exists = async (filter) => {
   const hit = rows.find((row) => matches(row, filter))
   return hit ? { _id: hit._id } : null
+}
+
+/*
+ * The two operations bulk sharing uses, behaving as the driver does.
+ *
+ * `updateMany` applies `$addToSet` with `$each` to every matching row and
+ * reports `modifiedCount` — the number of documents that actually changed,
+ * which is not the number matched when somebody is already shared.
+ */
+Lead.countDocuments = async (filter) => rows.filter((row) => matches(row, filter)).length
+Lead.updateMany = async (filter, update) => {
+  updateManyCalls.push({ filter, update })
+
+  const each = update?.$addToSet?.sharedWith?.$each ?? []
+  let modified = 0
+
+  for (const row of rows) {
+    if (!matches(row, filter)) continue
+
+    const before = (row.sharedWith ?? []).map(String)
+    const after = [...before]
+    for (const id of each) if (!after.includes(String(id))) after.push(String(id))
+
+    if (after.length !== before.length) {
+      row.sharedWith = after
+      modified += 1
+    }
+  }
+
+  return { matchedCount: rows.filter((row) => matches(row, filter)).length, modifiedCount: modified }
 }
 
 User.find = (filter) => {
@@ -459,6 +491,250 @@ reset({ sharedWith: [USER_B, USER_C] })
   check('it loads', r.ok, r.ok ? '' : r.message)
   check('it names both users', (r.payload?.data?.items ?? []).length === 2,
     String((r.payload?.data?.items ?? []).length))
+}
+
+// ---------------------------------------------------------------------------
+// Bulk sharing — the whole register at once
+// ---------------------------------------------------------------------------
+
+/** Our two live enquiries, one deleted one of ours, and another owner's. */
+function seedRegister() {
+  reset()
+  rows.push({
+    _id: '00000000000000000000bbbb', owner: MANAGER, reference: 'XAMP1688',
+    stage: 'active', market: 'AU', isDeleted: false, company: COMPANY_ID,
+    contact: CONTACT_ID, sharedWith: [],
+  })
+  // Ours, but deleted — must never be touched.
+  rows.push({
+    _id: '00000000000000000000dddd', owner: MANAGER, reference: 'XAMP1689',
+    stage: 'active', market: 'AU', isDeleted: true, company: null,
+    contact: null, sharedWith: [],
+  })
+  // Another manager's enquiry — must never be touched.
+  rows.push({
+    _id: '00000000000000000000cccc', owner: ORG_OWNER, reference: 'XNMP0001',
+    stage: 'active', market: 'NZ', isDeleted: false, company: null,
+    contact: null, sharedWith: [],
+  })
+}
+
+const mine = () => rows.filter((r) => String(r.owner) === MANAGER && r.isDeleted === false)
+const foreign = () => rows.find((r) => String(r._id) === '00000000000000000000cccc')
+const deletedOne = () => rows.find((r) => String(r._id) === '00000000000000000000dddd')
+
+console.log('\n23. A manager bulk-shares every enquiry they own')
+seedRegister()
+{
+  const r = await call(controller.bulkShare, { ...asManager, body: { userIds: [USER_B, USER_C] } })
+  check('the operation succeeds', r.ok, r.ok ? '' : r.message)
+  check('both live enquiries were shared', mine().every((l) => l.sharedWith.length === 2),
+    JSON.stringify(mine().map((l) => l.sharedWith.length)))
+  check('updatedCount is the owner-scoped total', r.payload?.data?.updatedCount === 2,
+    String(r.payload?.data?.updatedCount))
+  check('it reports the users', (r.payload?.data?.userIds ?? []).length === 2)
+  check('the message names both numbers',
+    /2 lead\(s\) shared with 2 user\(s\)/.test(r.payload?.message ?? ''), r.payload?.message)
+}
+
+console.log('\n24. The update is scoped to the caller and to live enquiries')
+seedRegister()
+{
+  await call(controller.bulkShare, { ...asManager, body: { userIds: [USER_B] } })
+  const { filter, update } = updateManyCalls[0] ?? {}
+  check('updateMany was called once', updateManyCalls.length === 1, String(updateManyCalls.length))
+  check('scoped to the authenticated owner', String(filter?.owner) === MANAGER, JSON.stringify(filter))
+  check('scoped to isDeleted: false', filter?.isDeleted === false, JSON.stringify(filter))
+  check('the filter contains nothing else',
+    Object.keys(filter ?? {}).sort().join(',') === 'isDeleted,owner', Object.keys(filter ?? {}).join(','))
+  check('it uses $addToSet + $each', Boolean(update?.$addToSet?.sharedWith?.$each), JSON.stringify(update))
+  check('the update writes no field but sharedWith',
+    Object.keys(update ?? {}).join(',') === '$addToSet' &&
+    Object.keys(update?.$addToSet ?? {}).join(',') === 'sharedWith', JSON.stringify(update))
+}
+
+console.log('\n25. Another manager’s enquiries are never modified')
+seedRegister()
+{
+  await call(controller.bulkShare, { ...asManager, body: { userIds: [USER_B, USER_C] } })
+  check('the foreign enquiry is untouched', (foreign().sharedWith ?? []).length === 0,
+    JSON.stringify(foreign().sharedWith))
+  check('its owner is unchanged', String(foreign().owner) === ORG_OWNER)
+}
+
+console.log('\n26. Deleted enquiries are never modified')
+seedRegister()
+{
+  await call(controller.bulkShare, { ...asManager, body: { userIds: [USER_B] } })
+  check('the soft-deleted enquiry is untouched', (deletedOne().sharedWith ?? []).length === 0,
+    JSON.stringify(deletedOne().sharedWith))
+  check('it is still deleted', deletedOne().isDeleted === true)
+}
+
+console.log('\n27. Existing shared users are preserved, never overwritten')
+seedRegister()
+{
+  rows[0].sharedWith = [USER_D]
+  await call(controller.bulkShare, { ...asManager, body: { userIds: [USER_B] } })
+
+  const ids = rows[0].sharedWith.map(String)
+  check('the pre-existing grant survives', ids.includes(USER_D), JSON.stringify(ids))
+  check('the new grant was added', ids.includes(USER_B), JSON.stringify(ids))
+  check('both are present', ids.length === 2, String(ids.length))
+}
+
+console.log('\n28. Running it twice is idempotent')
+seedRegister()
+{
+  const first = await call(controller.bulkShare, { ...asManager, body: { userIds: [USER_B, USER_C] } })
+  const snapshot = JSON.stringify(mine().map((l) => [...l.sharedWith].map(String).sort()))
+
+  const second = await call(controller.bulkShare, { ...asManager, body: { userIds: [USER_B, USER_C] } })
+  check('the second run succeeds', second.ok, second.ok ? '' : second.message)
+  check('nothing changed the second time',
+    JSON.stringify(mine().map((l) => [...l.sharedWith].map(String).sort())) === snapshot)
+  check('no duplicate ids anywhere',
+    mine().every((l) => new Set(l.sharedWith.map(String)).size === l.sharedWith.length))
+  check('modifiedCount is 0 on the repeat', second.payload?.data?.modifiedCount === 0,
+    String(second.payload?.data?.modifiedCount))
+  check('updatedCount still reports coverage',
+    second.payload?.data?.updatedCount === first.payload?.data?.updatedCount)
+}
+
+console.log('\n29. Duplicates in the request, and the owner, are dropped')
+seedRegister()
+{
+  const r = await call(controller.bulkShare, {
+    ...asManager, body: { userIds: [USER_B, USER_B, USER_C, MANAGER] },
+  })
+  check('the operation succeeds', r.ok, r.ok ? '' : r.message)
+  check('two recipients, not four', (r.payload?.data?.userIds ?? []).length === 2,
+    JSON.stringify(r.payload?.data?.userIds))
+  check('the owner is not among them',
+    (r.payload?.data?.userIds ?? []).every((id) => String(id) !== MANAGER))
+  check('no enquiry lists the owner as shared',
+    mine().every((l) => l.sharedWith.every((id) => String(id) !== MANAGER)))
+}
+
+console.log('\n30. Ownership is never changed by a bulk share')
+seedRegister()
+{
+  await call(controller.bulkShare, { ...asManager, body: { userIds: [USER_B, USER_C] } })
+  check('every enquiry keeps its owner', mine().every((l) => String(l.owner) === MANAGER))
+  check('the foreign enquiry keeps its owner', String(foreign().owner) === ORG_OWNER)
+}
+
+console.log('\n31. A non-manager cannot bulk-share')
+seedRegister()
+{
+  const r = await call(controller.bulkShare, { ...asB, body: { userIds: [USER_C] } })
+  check('a sales user is refused', !r.ok, r.ok ? 'IT WAS ALLOWED' : `${r.status}`)
+  check('403', r.status === 403, String(r.status))
+  check('updateMany was never called', updateManyCalls.length === 0, String(updateManyCalls.length))
+  check('nothing was shared', mine().every((l) => l.sharedWith.length === 0))
+}
+
+console.log('\n32. A shared user cannot bulk-share someone else’s register')
+seedRegister()
+{
+  rows[0].sharedWith = [USER_B]
+  const r = await call(controller.bulkShare, { ...asB, body: { userIds: [USER_D] } })
+  check('refused', !r.ok, r.ok ? 'IT WAS ALLOWED' : `${r.status}`)
+  check('the manager’s enquiry is unchanged', rows[0].sharedWith.length === 1,
+    JSON.stringify(rows[0].sharedWith))
+  check('User D gained nothing', rows[0].sharedWith.every((id) => String(id) !== USER_D))
+}
+
+console.log('\n33. Ineligible users are refused before anything is written')
+seedRegister()
+{
+  const r = await call(controller.bulkShare, { ...asManager, body: { userIds: [USER_B, INACTIVE] } })
+  check('a suspended account is refused', !r.ok, r.ok ? 'IT WAS ALLOWED' : `${r.status}`)
+  check('400', r.status === 400, String(r.status))
+  check('updateMany was never called', updateManyCalls.length === 0)
+  check('not even the valid half was applied', mine().every((l) => l.sharedWith.length === 0))
+}
+
+console.log('\n34. An empty selection is refused')
+seedRegister()
+{
+  const r = await call(controller.bulkShare, { ...asManager, body: { userIds: [] } })
+  check('refused', !r.ok, r.ok ? 'IT WAS ALLOWED' : `${r.status}`)
+  check('400', r.status === 400, String(r.status))
+  check('nothing was written', updateManyCalls.length === 0)
+
+  const onlyOwner = await call(controller.bulkShare, { ...asManager, body: { userIds: [MANAGER] } })
+  check('a selection of just the owner is refused too', !onlyOwner.ok,
+    onlyOwner.ok ? 'IT WAS ALLOWED' : `${onlyOwner.status}`)
+}
+
+console.log('\n35. The org owner may bulk-share their own register only')
+seedRegister()
+{
+  const r = await call(controller.bulkShare, { ...asOrgOwner, body: { userIds: [USER_B] } })
+  check('the operation succeeds', r.ok, r.ok ? '' : r.message)
+  check('their own enquiry was shared', (foreign().sharedWith ?? []).length === 1,
+    JSON.stringify(foreign().sharedWith))
+  check('the manager’s enquiries were NOT touched', mine().every((l) => l.sharedWith.length === 0),
+    JSON.stringify(mine().map((l) => l.sharedWith.length)))
+  check('the scope named the org owner', String(updateManyCalls[0]?.filter?.owner) === ORG_OWNER)
+}
+
+console.log('\n36. One audit entry for the whole operation, not one per enquiry')
+seedRegister()
+{
+  await call(controller.bulkShare, { ...asManager, body: { userIds: [USER_B, USER_C] } })
+  check('exactly one audit entry', audits.length === 1, String(audits.length))
+
+  const entry = audits[0]
+  check('it reuses lead.sharing_updated', entry?.action === 'lead.sharing_updated', String(entry?.action))
+  check('it is marked as bulk', entry?.metadata?.bulk === true)
+  check('it names the recipients', (entry?.metadata?.added ?? []).length === 2,
+    JSON.stringify(entry?.metadata?.added))
+  check('it records how many enquiries matched', entry?.metadata?.matched === 2,
+    String(entry?.metadata?.matched))
+  check('it records the unchanged owner', String(entry?.metadata?.owner) === MANAGER)
+}
+
+console.log('\n37. The preview answers what the dialog needs')
+seedRegister()
+{
+  const asMgr = await call(controller.bulkSharingPreview, { ...asManager })
+  check('a manager may bulk-share', asMgr.payload?.data?.canBulkShare === true)
+  check('the count is their live owned enquiries only', asMgr.payload?.data?.leadCount === 2,
+    String(asMgr.payload?.data?.leadCount))
+
+  const asSales = await call(controller.bulkSharingPreview, { ...asB })
+  check('a sales user may not', asSales.payload?.data?.canBulkShare === false)
+  check('and is given no count', asSales.payload?.data?.leadCount === 0,
+    String(asSales.payload?.data?.leadCount))
+}
+
+console.log('\n38. Bulk sharing never touches companies, contacts or deletes')
+seedRegister()
+{
+  await call(controller.bulkShare, { ...asManager, body: { userIds: [USER_B] } })
+  check('no company write', companyWrites.length === 0, companyWrites.join(','))
+  check('no contact write', contactWrites.length === 0, contactWrites.join(','))
+  check('no delete was attempted', deleteCalls.length === 0)
+}
+
+console.log('\n39. Individual sharing still works alongside bulk')
+seedRegister()
+{
+  await call(controller.bulkShare, { ...asManager, body: { userIds: [USER_B] } })
+  check('bulk applied to both', mine().every((l) => l.sharedWith.length === 1))
+
+  const r = await call(controller.updateSharing, {
+    ...asManager, params: { id: LEAD_ID }, body: { userIds: [USER_C] },
+  })
+  check('the individual save succeeds', r.ok, r.ok ? '' : r.message)
+  check('that one enquiry now lists only C',
+    rows[0].sharedWith.map(String).join(',') === USER_C, JSON.stringify(rows[0].sharedWith))
+  check('the other enquiry is unaffected by it',
+    mine().find((l) => String(l._id) === '00000000000000000000bbbb')
+      .sharedWith.map(String).join(',') === USER_B)
+  check('ownership unchanged throughout', mine().every((l) => String(l.owner) === MANAGER))
 }
 
 console.log(`\n${pass} passed, ${fail} failed\n`)

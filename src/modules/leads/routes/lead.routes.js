@@ -173,6 +173,19 @@ leadRouter.get('/shareable-users', controller.shareableUsers)
 leadRouter.get('/sharing/bulk', controller.bulkSharingPreview)
 leadRouter.put('/sharing/bulk', idempotent(), controller.bulkShare)
 
+/*
+ * Taking that access back.
+ *
+ * A third segment rather than a verb on the grant, so the two operations are
+ * separate URLs that cannot be confused for one another in a log or a
+ * permission rule — and registered here with the other literal paths, well
+ * before `/:id`, for the same reason they are.
+ *
+ * Same guard as the grant above: `canBulkShare` in the handler, plus a filter
+ * scoped to `{ owner: <session user> }` that no request body can influence.
+ */
+leadRouter.put('/sharing/bulk/revoke', idempotent(), controller.bulkRevokeSharing)
+
 leadRouter.get('/', controller.list)
 
 /**

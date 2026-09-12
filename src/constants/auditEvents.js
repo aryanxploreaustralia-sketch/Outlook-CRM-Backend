@@ -197,6 +197,18 @@ export const AUDIT_EVENTS = Object.freeze({
    * removed, so the grant is reconstructable after the fact.
    */
   LEAD_SHARING_UPDATED: { action: 'lead.sharing_updated', category: LEAD, label: 'Changed who an enquiry is shared with', entityType: AUDIT_ENTITY.LEAD, severity: NOTICE },
+  /**
+   * Access to enquiries was taken back.
+   *
+   * Its own event rather than another `LEAD_SHARING_UPDATED`, because "who lost
+   * access, and when" is the question an audit log is actually asked after the
+   * fact, and answering it should not mean reading the metadata of every
+   * sharing entry to find the ones that removed somebody.
+   *
+   * `NOTICE`, matching the grant it reverses: revoking narrows access and
+   * destroys no data.
+   */
+  LEAD_SHARING_REVOKED: { action: 'lead.sharing_revoked', category: LEAD, label: 'Removed access to enquiries', entityType: AUDIT_ENTITY.LEAD, severity: NOTICE },
   LEAD_IMPORTED: { action: 'lead.imported', category: LEAD, label: 'Imported enquiries', entityType: AUDIT_ENTITY.LEAD, severity: NOTICE },
   /**
    * Pre-existing. Written before this phase with exactly this action string, so

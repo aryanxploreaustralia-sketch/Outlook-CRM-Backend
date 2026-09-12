@@ -1280,11 +1280,140 @@ export const bulkSharingPreview = asyncHandler(async (req, res) => {
    * Not counted for somebody who may not do it. The flag is the answer, and a
    * refused caller has no use for the number.
    */
-  const leadCount = allowed ? await Lead.countDocuments({ owner, isDeleted: false }) : 0
+  const filter = { owner, isDeleted: false }
+
+  /*
+   * The count, and who currently holds access across this register.
+   *
+   * `sharedUserIds` is what makes revoking usable rather than guesswork: the
+   * Manage Sharing dialog lists every colleague, and without this it could not
+   * say which of them actually has anything to lose. `distinct` collapses the
+   * arrays server-side, so the response is a handful of ids rather than one
+   * entry per enquiry.
+   *
+   * Neither is computed for somebody who may not manage sharing — the flag is
+   * the answer, and a refused caller has no use for either.
+   */
+  const [leadCount, sharedUserIds] = allowed
+    ? await Promise.all([
+        Lead.countDocuments(filter),
+        Lead.distinct('sharedWith', filter),
+      ])
+    : [0, []]
 
   return sendSuccess(res, {
     message: 'Bulk sharing preview.',
-    data: { canBulkShare: allowed, leadCount },
+    data: {
+      canBulkShare: allowed,
+      leadCount,
+      /** Ids only. The dialog resolves them against the user list it has. */
+      sharedUserIds: (sharedUserIds ?? []).map(String),
+    },
+  })
+})
+
+/**
+ * PUT /api/v1/leads/sharing/bulk/revoke
+ *
+ * Takes back access to every enquiry this manager owns.
+ *
+ * ## The mirror of `bulkShare`, deliberately
+ *
+ * Same authorization (`canBulkShare`), same scope
+ * (`{ owner: <session user>, isDeleted: false }`), same owner-from-session
+ * rule — there is no `ownerId` parameter to send. Only the update operator
+ * differs: `$pull` where the grant used `$addToSet`.
+ *
+ * ## It can only ever narrow
+ *
+ * `$pull` with `$in` removes the named people and touches nothing else. A
+ * colleague who was not selected keeps their access; an enquiry that never had
+ * any of these people is not modified at all, which is what makes a repeat run
+ * a no-op rather than a second change. `sharedWith` is the only field in the
+ * update, so ownership, the reference, the stage, the notes and every other
+ * field are untouched by construction. Nothing is deleted.
+ *
+ * ## Why recipients are not checked for existence here
+ *
+ * `bulkShare` refuses a deleted account, because granting one access would name
+ * somebody in the share list who cannot use it. Revoking is the opposite case:
+ * if an account was deleted *after* it was shared, its id is still sitting in
+ * `sharedWith` arrays, and an existence check would make that the one grant
+ * nobody could ever clean up. So the format is validated — `sharingSchema`
+ * accepts nothing but object ids — and an id matching nobody simply removes
+ * nothing.
+ */
+export const bulkRevokeSharing = asyncHandler(async (req, res) => {
+  const { userIds } = sharingSchema.parse(req.body)
+
+  if (!canBulkShare(req)) {
+    throw ApiError.forbidden('Only a manager can manage sharing across their whole register.')
+  }
+
+  const owner = ownerOf(req)
+
+  // Deduplicated, and the owner dropped: an owner is never in their own
+  // `sharedWith`, so naming them here could only be a client mistake.
+  const requested = [...new Set(userIds.map(String))]
+  const targets = requested.filter((id) => id !== String(owner))
+
+  if (targets.length === 0) {
+    throw ApiError.badRequest('Select at least one colleague whose access you want to remove.')
+  }
+
+  const filter = { owner, isDeleted: false }
+
+  /*
+   * Counted before the update, and reported separately.
+   *
+   * `matchedCount` is how many enquiries were considered; `modifiedCount` is
+   * how many actually held one of these people and therefore changed. The
+   * second is the honest number for "access removed from N leads" — telling an
+   * operator their whole register changed when twenty enquiries did would be a
+   * lie in the direction that worries people.
+   */
+  const matchedCount = await Lead.countDocuments(filter)
+
+  const result = await Lead.updateMany(filter, {
+    $pull: { sharedWith: { $in: targets } },
+  })
+
+  const modifiedCount = result.modifiedCount ?? 0
+
+  /*
+   * One audit entry for the whole operation, matching the grant it reverses —
+   * a register of thousands would otherwise write thousands of rows for one
+   * click and bury everything else in the log.
+   */
+  await recordAudit({
+    req,
+    event: 'LEAD_SHARING_REVOKED',
+    summary: `Removed ${targets.length} user(s) from ${modifiedCount} of their enquiries`,
+    target: { id: String(owner), name: `${modifiedCount} enquiries` },
+    affectedCount: modifiedCount,
+    metadata: {
+      bulk: true,
+      operation: 'revoke',
+      removed: targets,
+      matched: matchedCount,
+      modified: modifiedCount,
+      // Recorded to make it evident in the log that ownership did not move.
+      owner: String(owner),
+    },
+  })
+
+  return sendSuccess(res, {
+    message:
+      modifiedCount === 0
+        ? 'None of your enquiries were shared with those users.'
+        : `Access removed for ${targets.length} user(s) from ${modifiedCount} lead(s).`,
+    data: {
+      /** Enquiries considered — every live enquiry this manager owns. */
+      updatedCount: matchedCount,
+      /** Of those, how many actually held one of these people. */
+      modifiedCount,
+      userIds: targets,
+    },
   })
 })
 

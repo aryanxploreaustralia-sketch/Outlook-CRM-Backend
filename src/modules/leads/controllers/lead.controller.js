@@ -1313,37 +1313,56 @@ export const bulkSharingPreview = asyncHandler(async (req, res) => {
 })
 
 /**
- * PUT /api/v1/leads/sharing/bulk/revoke
+ * PUT /api/v1/leads/sharing/bulk
  *
- * Takes back access to every enquiry this manager owns.
+ * Sets who this manager's whole register is shared with.
  *
- * ## The mirror of `bulkShare`, deliberately
+ * ## One endpoint, because the dialog asks one question
  *
- * Same authorization (`canBulkShare`), same scope
- * (`{ owner: <session user>, isDeleted: false }`), same owner-from-session
- * rule — there is no `ownerId` parameter to send. Only the update operator
- * differs: `$pull` where the grant used `$addToSet`.
+ * The body is the **desired final set of people**, exactly as the
+ * single-enquiry endpoint takes one. Ticking a name grants access, un-ticking
+ * revokes it, and one Save applies both — so there is no separate revoke
+ * endpoint to keep in step, and no way for a client to submit an add-list and
+ * a remove-list that disagree.
  *
- * ## It can only ever narrow
+ * ## The diff is computed here, against what is actually shared
  *
- * `$pull` with `$in` removes the named people and touches nothing else. A
- * colleague who was not selected keeps their access; an enquiry that never had
- * any of these people is not modified at all, which is what makes a repeat run
- * a no-op rather than a second change. `sharedWith` is the only field in the
- * update, so ownership, the reference, the stage, the notes and every other
- * field are untouched by construction. Nothing is deleted.
+ * Naively applying the selection to every enquiry would be wrong, and quietly
+ * so. The register is not one shared object: each enquiry carries its own
+ * `sharedWith`, and a colleague may hold access to three enquiries out of a
+ * thousand. That colleague shows as ticked — the dialog can only show one
+ * checkbox per person — so re-saving without touching them would promote them
+ * from three enquiries to the whole register, a change nobody asked for.
  *
- * ## Why recipients are not checked for existence here
+ * So only the **difference** is applied:
  *
- * `bulkShare` refuses a deleted account, because granting one access would name
- * somebody in the share list who cannot use it. Revoking is the opposite case:
- * if an account was deleted *after* it was shared, its id is still sitting in
- * `sharedWith` arrays, and an existence check would make that the one grant
- * nobody could ever clean up. So the format is validated — `sharingSchema`
- * accepts nothing but object ids — and an id matching nobody simply removes
- * nothing.
+ *   - selected, not currently a holder  → added everywhere
+ *   - currently a holder, not selected  → removed everywhere
+ *   - selected and already a holder     → left completely alone
+ *
+ * The third case is what preserves per-enquiry grants, and it is also what
+ * makes a repeat save a genuine no-op rather than a second, larger change.
+ *
+ * ## Two updates, and why that is the honest limit
+ *
+ * MongoDB refuses `$addToSet` and `$pull` on the same field in one update, so
+ * granting and revoking are two `updateMany` calls against the same filter.
+ * They are ordered removals-first: if the process died between them the
+ * register would be left having revoked but not yet granted, which is the
+ * narrower and therefore safer half to be stranded on. Each call is atomic in
+ * itself; the pair is not, and the architecture has no transaction here to
+ * make it so.
+ *
+ * ## Scope is the authorization
+ *
+ * `{ owner: <the session's user>, isDeleted: false }`, with the owner read
+ * from `req.auth` and never from the body — there is no `ownerId` parameter to
+ * send. Another manager's register cannot be reached however this is called,
+ * and a deleted enquiry is left alone. `sharedWith` is the only field written,
+ * so ownership, the reference, the stage, the notes and everything else are
+ * untouched by construction. Nothing is deleted.
  */
-export const bulkRevokeSharing = asyncHandler(async (req, res) => {
+export const bulkShare = asyncHandler(async (req, res) => {
   const { userIds } = sharingSchema.parse(req.body)
 
   if (!canBulkShare(req)) {
@@ -1353,168 +1372,106 @@ export const bulkRevokeSharing = asyncHandler(async (req, res) => {
   const owner = ownerOf(req)
 
   // Deduplicated, and the owner dropped: an owner is never in their own
-  // `sharedWith`, so naming them here could only be a client mistake.
+  // `sharedWith`, so naming them could only be a client mistake.
   const requested = [...new Set(userIds.map(String))]
-  const targets = requested.filter((id) => id !== String(owner))
+  const selected = requested.filter((id) => id !== String(owner))
 
-  if (targets.length === 0) {
-    throw ApiError.badRequest('Select at least one colleague whose access you want to remove.')
-  }
-
+  /*
+   * Every selected id must be a real, undeleted account.
+   *
+   * Only the *additions* are checked below. An id being removed is not
+   * required to still exist — if an account was deleted after being shared,
+   * its id is still sitting in `sharedWith` arrays, and refusing to name it
+   * would make that the one grant nobody could ever clean up.
+   */
   const filter = { owner, isDeleted: false }
 
-  /*
-   * Counted before the update, and reported separately.
-   *
-   * `matchedCount` is how many enquiries were considered; `modifiedCount` is
-   * how many actually held one of these people and therefore changed. The
-   * second is the honest number for "access removed from N leads" — telling an
-   * operator their whole register changed when twenty enquiries did would be a
-   * lie in the direction that worries people.
-   */
-  const matchedCount = await Lead.countDocuments(filter)
+  const [matchedCount, currentRaw] = await Promise.all([
+    Lead.countDocuments(filter),
+    Lead.distinct('sharedWith', filter),
+  ])
 
-  const result = await Lead.updateMany(filter, {
-    $pull: { sharedWith: { $in: targets } },
-  })
+  const current = (currentRaw ?? []).map(String)
 
-  const modifiedCount = result.modifiedCount ?? 0
+  const toAdd = selected.filter((id) => !current.includes(id))
+  const toRemove = current.filter((id) => !selected.includes(id))
+
+  await assertShareableUsers(toAdd)
+
+  let removedFrom = 0
+  let addedTo = 0
 
   /*
-   * One audit entry for the whole operation, matching the grant it reverses —
-   * a register of thousands would otherwise write thousands of rows for one
-   * click and bury everything else in the log.
+   * Removals first — see the note above on which half is safer to be stranded
+   * on. Each call is skipped entirely when its list is empty, so a save that
+   * only adds performs one update and a save that changes nothing performs
+   * none at all.
    */
-  await recordAudit({
-    req,
-    event: 'LEAD_SHARING_REVOKED',
-    summary: `Removed ${targets.length} user(s) from ${modifiedCount} of their enquiries`,
-    target: { id: String(owner), name: `${modifiedCount} enquiries` },
-    affectedCount: modifiedCount,
-    metadata: {
-      bulk: true,
-      operation: 'revoke',
-      removed: targets,
-      matched: matchedCount,
-      modified: modifiedCount,
-      // Recorded to make it evident in the log that ownership did not move.
-      owner: String(owner),
-    },
-  })
-
-  return sendSuccess(res, {
-    message:
-      modifiedCount === 0
-        ? 'None of your enquiries were shared with those users.'
-        : `Access removed for ${targets.length} user(s) from ${modifiedCount} lead(s).`,
-    data: {
-      /** Enquiries considered — every live enquiry this manager owns. */
-      updatedCount: matchedCount,
-      /** Of those, how many actually held one of these people. */
-      modifiedCount,
-      userIds: targets,
-    },
-  })
-})
-
-/**
- * PUT /api/v1/leads/sharing/bulk
- *
- * Grants a set of colleagues access to every enquiry this manager owns.
- *
- * ## The scope is the authorization
- *
- * The filter is `{ owner: <the session's user>, isDeleted: false }` and the
- * owner is read from `req.auth`, never from the body — there is no `ownerId`
- * parameter to send. So this endpoint cannot touch another manager's register
- * however it is called, and a soft-deleted enquiry is left alone. The role
- * check above decides who is offered the action; this filter decides what the
- * action can reach, and it is the one that matters.
- *
- * ## Additive, never destructive
- *
- * `$addToSet` with `$each` adds the selected people and leaves everybody
- * already on an enquiry exactly where they were. It also makes the operation
- * idempotent by construction: running it twice adds nobody twice, and a user
- * already shared on some enquiries is simply added to the rest. Nothing here
- * removes a grant — un-sharing stays on the single-enquiry dialog, where the
- * reader can see who they are removing.
- *
- * `owner` is not in the update, so ownership cannot change. Neither is any
- * other field: this writes one array and nothing else.
- */
-export const bulkShare = asyncHandler(async (req, res) => {
-  const { userIds } = sharingSchema.parse(req.body)
-
-  if (!canBulkShare(req)) {
-    throw ApiError.forbidden('Only a manager can share their whole register at once.')
+  if (toRemove.length > 0) {
+    const result = await Lead.updateMany(filter, {
+      $pull: { sharedWith: { $in: toRemove } },
+    })
+    removedFrom = result.modifiedCount ?? 0
   }
 
-  const owner = ownerOf(req)
-
-  // Deduplicated here so the same id cannot be counted twice in the response,
-  // and the owner dropped so nobody is "shared" an enquiry they already hold.
-  const requested = [...new Set(userIds.map(String))]
-  const recipients = requested.filter((id) => id !== String(owner))
-
-  if (recipients.length === 0) {
-    throw ApiError.badRequest('Select at least one colleague to share your enquiries with.')
+  if (toAdd.length > 0) {
+    const result = await Lead.updateMany(filter, {
+      $addToSet: { sharedWith: { $each: toAdd } },
+    })
+    addedTo = result.modifiedCount ?? 0
   }
 
-  // Every id checked before a single document is written.
-  await assertShareableUsers(recipients)
-
-  const filter = { owner, isDeleted: false }
-
   /*
-   * Counted separately from the update.
-   *
-   * `updateMany` reports `modifiedCount`, which counts only the documents that
-   * actually changed — so an enquiry where all the selected people were
-   * already shared is not counted. That is the right number for "what did this
-   * change", and the wrong one for "how many of my enquiries are now shared
-   * with them", which is what the operator asked. Both are returned.
-   */
-  const matchedCount = await Lead.countDocuments(filter)
-
-  const result = await Lead.updateMany(filter, {
-    $addToSet: { sharedWith: { $each: recipients } },
-  })
-
-  /*
-   * One audit entry for the whole operation, not one per enquiry.
-   *
-   * A manager with 3,000 enquiries would otherwise write 3,000 rows for a
-   * single click, which would bury every other entry in the log and tell a
-   * reader nothing that this one line does not.
+   * One audit entry for the whole operation, reusing the event the
+   * single-enquiry save writes. A register of thousands would otherwise
+   * produce thousands of rows for one click and bury everything else.
    */
   await recordAudit({
     req,
     event: 'LEAD_SHARING_UPDATED',
-    summary: `Shared all ${matchedCount} of their enquiries with ${recipients.length} user(s)`,
+    summary:
+      toAdd.length || toRemove.length
+        ? `Updated sharing across their ${matchedCount} enquiries: ` +
+          `${toAdd.length} added, ${toRemove.length} removed`
+        : `Left the sharing on their ${matchedCount} enquiries unchanged`,
     target: { id: String(owner), name: `${matchedCount} enquiries` },
-    affectedCount: result.modifiedCount ?? 0,
+    affectedCount: addedTo + removedFrom,
     metadata: {
       bulk: true,
-      added: recipients,
+      added: toAdd,
+      removed: toRemove,
+      /** The complete set the register is now shared with. */
+      total: selected.length,
       matched: matchedCount,
-      modified: result.modifiedCount ?? 0,
+      addedTo,
+      removedFrom,
       // Recorded to make it evident in the log that ownership did not move.
       owner: String(owner),
     },
   })
+
+  const changed = toAdd.length > 0 || toRemove.length > 0
+
+  const parts = []
+  if (toAdd.length > 0) parts.push(`shared with ${toAdd.length} user(s)`)
+  if (toRemove.length > 0) parts.push(`removed for ${toRemove.length} user(s)`)
 
   return sendSuccess(res, {
     message:
       matchedCount === 0
         ? 'You have no enquiries to share yet.'
-        : `${matchedCount} lead(s) shared with ${recipients.length} user(s).`,
+        : changed
+          ? `Access ${parts.join(' and ')} across ${matchedCount} lead(s).`
+          : 'Sharing is already set that way — nothing changed.',
     data: {
-      /** Enquiries the grant now covers — what the operator asked for. */
+      /** Enquiries the setting covers — every live enquiry this manager owns. */
       updatedCount: matchedCount,
-      /** Of those, how many actually changed. Zero on a repeat run. */
-      modifiedCount: result.modifiedCount ?? 0,
-      userIds: recipients,
+      /** Enquiries actually written to. Zero on a repeat save. */
+      modifiedCount: Math.max(addedTo, removedFrom),
+      /** The complete set the register is now shared with. */
+      userIds: selected,
+      added: toAdd,
+      removed: toRemove,
     },
   })
 })

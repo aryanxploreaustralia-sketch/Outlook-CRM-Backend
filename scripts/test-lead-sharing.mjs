@@ -633,7 +633,7 @@ seedRegister()
     String(r.payload?.data?.updatedCount))
   check('it reports the users', (r.payload?.data?.userIds ?? []).length === 2)
   check('the message names both numbers',
-    /2 lead\(s\) shared with 2 user\(s\)/.test(r.payload?.message ?? ''), r.payload?.message)
+    /shared with 2 user\(s\) across 2 lead\(s\)/.test(r.payload?.message ?? ''), r.payload?.message)
 }
 
 console.log('\n24. The update is scoped to the caller and to live enquiries')
@@ -670,16 +670,40 @@ seedRegister()
   check('it is still deleted', deletedOne().isDeleted === true)
 }
 
-console.log('\n27. Existing shared users are preserved, never overwritten')
+console.log('\n27. The save is the final set: unticked colleagues are removed')
 seedRegister()
 {
-  rows[0].sharedWith = [USER_D]
+  rows[0].sharedWith = [USER_D]           // already shared with somebody else
+  rows[1].sharedWith = [USER_D]
+
+  // Saving [B] means "B and nobody else" — D was not ticked, so D goes.
   await call(controller.bulkShare, { ...asManager, body: { userIds: [USER_B] } })
 
   const ids = rows[0].sharedWith.map(String)
-  check('the pre-existing grant survives', ids.includes(USER_D), JSON.stringify(ids))
-  check('the new grant was added', ids.includes(USER_B), JSON.stringify(ids))
-  check('both are present', ids.length === 2, String(ids.length))
+  check('the newly ticked colleague was added', ids.includes(USER_B), JSON.stringify(ids))
+  check('the unticked colleague was removed', ids.includes(USER_D) === false, JSON.stringify(ids))
+  check('exactly the selected set remains', ids.length === 1, String(ids.length))
+  check('both owned enquiries agree',
+    rows[1].sharedWith.map(String).join(',') === USER_B, JSON.stringify(rows[1].sharedWith))
+}
+
+console.log('\n27b. A colleague left ticked is not touched at all')
+seedRegister()
+{
+  // D holds access on ONE enquiry only — a partial grant.
+  rows[0].sharedWith = [USER_D]
+  rows[1].sharedWith = []
+
+  // D is still ticked (it is a current holder), and B is newly ticked.
+  await call(controller.bulkShare, { ...asManager, body: { userIds: [USER_D, USER_B] } })
+
+  check('D was NOT promoted to the second enquiry',
+    rows[1].sharedWith.map(String).includes(USER_D) === false,
+    JSON.stringify(rows[1].sharedWith))
+  check('D keeps the enquiry they had', rows[0].sharedWith.map(String).includes(USER_D))
+  check('B was added to both',
+    rows[0].sharedWith.map(String).includes(USER_B) &&
+    rows[1].sharedWith.map(String).includes(USER_B))
 }
 
 console.log('\n28. Running it twice is idempotent')
@@ -765,17 +789,28 @@ seedRegister()
   check('not even the valid half was applied', mine().every((l) => l.sharedWith.length === 0))
 }
 
-console.log('\n34. An empty selection is refused')
+console.log('\n34. An empty final set means "shared with nobody"')
 seedRegister()
 {
-  const r = await call(controller.bulkShare, { ...asManager, body: { userIds: [] } })
-  check('refused', !r.ok, r.ok ? 'IT WAS ALLOWED' : `${r.status}`)
-  check('400', r.status === 400, String(r.status))
-  check('nothing was written', updateManyCalls.length === 0)
+  await call(controller.bulkShare, { ...asManager, body: { userIds: [USER_B, USER_C] } })
+  check('two hold access first', mine().every((l) => l.sharedWith.length === 2))
 
-  const onlyOwner = await call(controller.bulkShare, { ...asManager, body: { userIds: [MANAGER] } })
-  check('a selection of just the owner is refused too', !onlyOwner.ok,
-    onlyOwner.ok ? 'IT WAS ALLOWED' : `${onlyOwner.status}`)
+  // Unticking everybody is a legitimate final state, exactly as it is on the
+  // single-enquiry dialog — not a destructive request to be refused.
+  const r = await call(controller.bulkShare, { ...asManager, body: { userIds: [] } })
+  check('the save succeeds', r.ok, r.ok ? '' : r.message)
+  check('nobody is left', mine().every((l) => l.sharedWith.length === 0),
+    JSON.stringify(mine().map((l) => l.sharedWith)))
+  check('both were reported as removed', (r.payload?.data?.removed ?? []).length === 2,
+    JSON.stringify(r.payload?.data?.removed))
+  check('no enquiry was deleted', rows.length === 4, String(rows.length))
+  check('ownership unchanged', mine().every((l) => String(l.owner) === MANAGER))
+
+  // A selection of only the owner reduces to the same thing.
+  await call(controller.bulkShare, { ...asManager, body: { userIds: [USER_B] } })
+  const ownerOnly = await call(controller.bulkShare, { ...asManager, body: { userIds: [MANAGER] } })
+  check('a selection of just the owner clears sharing', ownerOnly.ok, ownerOnly.ok ? '' : ownerOnly.message)
+  check('and leaves nobody shared', mine().every((l) => l.sharedWith.length === 0))
 }
 
 console.log('\n35. The org owner may bulk-share their own register only')
@@ -892,164 +927,183 @@ reset({ sharedWith: [USER_B, USER_C] })
   check('B is unaffected', (await call(controller.getById, { ...asB, ...P })).ok)
 }
 
-console.log('\n43. Bulk revoke removes the selected people from every owned enquiry')
+console.log('\n43. Bulk: one save both grants and revokes')
 seedRegister()
 {
   await call(controller.bulkShare, { ...asManager, body: { userIds: [USER_B, USER_C, USER_D] } })
   check('all three were granted first', mine().every((l) => l.sharedWith.length === 3))
 
-  const r = await call(controller.bulkRevokeSharing, { ...asManager, body: { userIds: [USER_B, USER_C] } })
-  check('the revoke succeeds', r.ok, r.ok ? '' : r.message)
-  check('both were removed everywhere',
+  // The reader unticks B and C, leaves D ticked. Final set = [D].
+  const r = await call(controller.bulkShare, { ...asManager, body: { userIds: [USER_D] } })
+  check('the save succeeds', r.ok, r.ok ? '' : r.message)
+  check('both unticked colleagues lost access everywhere',
     mine().every((l) => !l.sharedWith.map(String).includes(USER_B) &&
                         !l.sharedWith.map(String).includes(USER_C)),
     JSON.stringify(mine().map((l) => l.sharedWith)))
-  check('the colleague NOT selected keeps access',
+  check('the colleague left ticked keeps access',
     mine().every((l) => l.sharedWith.map(String).includes(USER_D)))
   check('one grant remains per enquiry', mine().every((l) => l.sharedWith.length === 1))
-  check('modifiedCount reports the enquiries that changed', r.payload?.data?.modifiedCount === 2,
-    String(r.payload?.data?.modifiedCount))
-  check('the message uses the real figure',
-    /Access removed for 2 user\(s\) from 2 lead\(s\)/.test(r.payload?.message ?? ''), r.payload?.message)
+  check('the response reports the removals', (r.payload?.data?.removed ?? []).length === 2,
+    JSON.stringify(r.payload?.data?.removed))
+  check('and no additions', (r.payload?.data?.added ?? []).length === 0)
 }
 
-console.log('\n44. Bulk revoke uses $pull scoped to the caller and live enquiries')
+console.log('\n43b. Adding and removing in the same save')
+seedRegister()
+{
+  await call(controller.bulkShare, { ...asManager, body: { userIds: [USER_B, USER_C] } })
+
+  // Untick C, tick D — one save, both halves.
+  const r = await call(controller.bulkShare, { ...asManager, body: { userIds: [USER_B, USER_D] } })
+  check('the save succeeds', r.ok, r.ok ? '' : r.message)
+  check('D was added', (r.payload?.data?.added ?? []).map(String).join(',') === USER_D,
+    JSON.stringify(r.payload?.data?.added))
+  check('C was removed', (r.payload?.data?.removed ?? []).map(String).join(',') === USER_C,
+    JSON.stringify(r.payload?.data?.removed))
+  check('B was untouched',
+    !(r.payload?.data?.added ?? []).map(String).includes(USER_B) &&
+    !(r.payload?.data?.removed ?? []).map(String).includes(USER_B))
+  check('the final set is B and D',
+    mine().every((l) => {
+      const ids = l.sharedWith.map(String).sort()
+      return ids.length === 2 && ids.includes(USER_B) && ids.includes(USER_D)
+    }), JSON.stringify(mine().map((l) => l.sharedWith)))
+}
+
+console.log('\n44. The updates are scoped to the caller and to live enquiries')
 seedRegister()
 {
   await call(controller.bulkShare, { ...asManager, body: { userIds: [USER_B] } })
   updateManyCalls.length = 0
 
-  await call(controller.bulkRevokeSharing, { ...asManager, body: { userIds: [USER_B] } })
-  const { filter, update } = updateManyCalls[0] ?? {}
+  // A save that both adds and removes performs exactly two updates.
+  await call(controller.bulkShare, { ...asManager, body: { userIds: [USER_C] } })
+  check('two updateMany calls — one pull, one addToSet', updateManyCalls.length === 2,
+    String(updateManyCalls.length))
 
-  check('updateMany was called once', updateManyCalls.length === 1, String(updateManyCalls.length))
-  check('scoped to the authenticated owner', String(filter?.owner) === MANAGER, JSON.stringify(filter))
-  check('scoped to isDeleted: false', filter?.isDeleted === false, JSON.stringify(filter))
-  check('the filter contains nothing else',
-    Object.keys(filter ?? {}).sort().join(',') === 'isDeleted,owner', Object.keys(filter ?? {}).join(','))
-  check('it uses $pull with $in', Array.isArray(update?.$pull?.sharedWith?.$in), JSON.stringify(update))
-  check('the update writes no field but sharedWith',
-    Object.keys(update ?? {}).join(',') === '$pull' &&
-    Object.keys(update?.$pull ?? {}).join(',') === 'sharedWith', JSON.stringify(update))
+  for (const { filter } of updateManyCalls) {
+    check('scoped to the authenticated owner', String(filter?.owner) === MANAGER, JSON.stringify(filter))
+    check('scoped to isDeleted: false', filter?.isDeleted === false, JSON.stringify(filter))
+    check('the filter contains nothing else',
+      Object.keys(filter ?? {}).sort().join(',') === 'isDeleted,owner', Object.keys(filter ?? {}).join(','))
+  }
+
+  const pull = updateManyCalls.find((c) => c.update?.$pull)
+  const add = updateManyCalls.find((c) => c.update?.$addToSet)
+  check('removals use $pull with $in', Array.isArray(pull?.update?.$pull?.sharedWith?.$in),
+    JSON.stringify(pull?.update))
+  check('additions use $addToSet with $each', Array.isArray(add?.update?.$addToSet?.sharedWith?.$each),
+    JSON.stringify(add?.update))
+  check('removals happen before additions',
+    updateManyCalls.indexOf(pull) < updateManyCalls.indexOf(add))
+  check('neither update writes any field but sharedWith',
+    updateManyCalls.every(({ update }) => {
+      const op = Object.keys(update)[0]
+      return Object.keys(update).length === 1 && Object.keys(update[op]).join(',') === 'sharedWith'
+    }))
 }
 
-console.log('\n45. Bulk revoke never touches another owner or a deleted enquiry')
+console.log('\n45. Bulk never touches another owner or a deleted enquiry')
 seedRegister()
 {
-  // Give the foreign enquiry and the deleted one the same colleague directly.
   foreign().sharedWith = [USER_B]
   deletedOne().sharedWith = [USER_B]
   await call(controller.bulkShare, { ...asManager, body: { userIds: [USER_B] } })
 
-  const r = await call(controller.bulkRevokeSharing, { ...asManager, body: { userIds: [USER_B] } })
-  check('the revoke succeeds', r.ok, r.ok ? '' : r.message)
+  // Now untick everybody — our live enquiries clear, the others must not.
+  const r = await call(controller.bulkShare, { ...asManager, body: { userIds: [] } })
+  check('the save succeeds', r.ok, r.ok ? '' : r.message)
   check('our live enquiries lost the grant', mine().every((l) => l.sharedWith.length === 0))
   check('another owner keeps theirs', (foreign().sharedWith ?? []).map(String).includes(USER_B),
     JSON.stringify(foreign().sharedWith))
   check('the deleted enquiry keeps theirs', (deletedOne().sharedWith ?? []).map(String).includes(USER_B),
     JSON.stringify(deletedOne().sharedWith))
   check('the deleted enquiry is still deleted', deletedOne().isDeleted === true)
+  check('another owner keeps their ownership', String(foreign().owner) === ORG_OWNER)
 }
 
-console.log('\n46. Bulk revoke is idempotent')
+console.log('\n46. Repeating the same save is idempotent')
 seedRegister()
 {
   await call(controller.bulkShare, { ...asManager, body: { userIds: [USER_B, USER_C] } })
-  const first = await call(controller.bulkRevokeSharing, { ...asManager, body: { userIds: [USER_B] } })
-  const snapshot = JSON.stringify(mine().map((l) => l.sharedWith.map(String)))
+  const snapshot = JSON.stringify(mine().map((l) => l.sharedWith.map(String).sort()))
+  updateManyCalls.length = 0
 
-  const second = await call(controller.bulkRevokeSharing, { ...asManager, body: { userIds: [USER_B] } })
-  check('the second run succeeds', second.ok, second.ok ? '' : second.message)
-  check('nothing changed the second time',
-    JSON.stringify(mine().map((l) => l.sharedWith.map(String))) === snapshot)
-  check('modifiedCount is 0 on the repeat', second.payload?.data?.modifiedCount === 0,
-    String(second.payload?.data?.modifiedCount))
-  check('the first run did change things', first.payload?.data?.modifiedCount === 2,
-    String(first.payload?.data?.modifiedCount))
-  check('C still holds access throughout',
-    mine().every((l) => l.sharedWith.map(String).includes(USER_C)))
+  const again = await call(controller.bulkShare, { ...asManager, body: { userIds: [USER_B, USER_C] } })
+  check('the repeat succeeds', again.ok, again.ok ? '' : again.message)
+  check('nothing changed', JSON.stringify(mine().map((l) => l.sharedWith.map(String).sort())) === snapshot)
+  check('NO update was performed at all', updateManyCalls.length === 0, String(updateManyCalls.length))
+  check('nothing reported as added', (again.payload?.data?.added ?? []).length === 0)
+  check('nothing reported as removed', (again.payload?.data?.removed ?? []).length === 0)
+  check('the message says so', /already set that way/.test(again.payload?.message ?? ''),
+    again.payload?.message)
+  check('no duplicate ids anywhere',
+    mine().every((l) => new Set(l.sharedWith.map(String)).size === l.sharedWith.length))
 }
 
-console.log('\n47. Revoking somebody who has no access changes nothing')
+console.log('\n47. Ticking somebody who already holds access changes nothing for them')
 seedRegister()
 {
   await call(controller.bulkShare, { ...asManager, body: { userIds: [USER_B] } })
-  const r = await call(controller.bulkRevokeSharing, { ...asManager, body: { userIds: [USER_D] } })
+  const r = await call(controller.bulkShare, { ...asManager, body: { userIds: [USER_B, USER_D] } })
 
   check('the call succeeds', r.ok, r.ok ? '' : r.message)
-  check('nothing was modified', r.payload?.data?.modifiedCount === 0,
-    String(r.payload?.data?.modifiedCount))
-  check('the message says so', /None of your enquiries were shared/.test(r.payload?.message ?? ''),
-    r.payload?.message)
-  check('B still holds access', mine().every((l) => l.sharedWith.map(String).includes(USER_B)))
+  check('only D is reported added', (r.payload?.data?.added ?? []).map(String).join(',') === USER_D,
+    JSON.stringify(r.payload?.data?.added))
+  check('B is not re-added', (r.payload?.data?.added ?? []).map(String).includes(USER_B) === false)
+  check('both now hold access', mine().every((l) => l.sharedWith.length === 2))
 }
 
-console.log('\n48. Bulk revoke authorization is unchanged from bulk share')
+console.log('\n48. Authorization is unchanged')
 seedRegister()
 {
   await call(controller.bulkShare, { ...asManager, body: { userIds: [USER_B, USER_C] } })
   updateManyCalls.length = 0
 
-  const sales = await call(controller.bulkRevokeSharing, { ...asB, body: { userIds: [USER_C] } })
+  const sales = await call(controller.bulkShare, { ...asB, body: { userIds: [USER_C] } })
   check('a sales user is refused', !sales.ok, sales.ok ? 'IT WAS ALLOWED' : String(sales.status))
   check('403', sales.status === 403, String(sales.status))
-  check('updateMany was never called', updateManyCalls.length === 0)
-  check('nothing was revoked', mine().every((l) => l.sharedWith.length === 2))
+  check('no update was performed', updateManyCalls.length === 0)
+  check('nothing changed', mine().every((l) => l.sharedWith.length === 2))
 
-  const shared = await call(controller.bulkRevokeSharing, { ...asC, body: { userIds: [USER_B] } })
+  const shared = await call(controller.bulkShare, { ...asC, body: { userIds: [USER_B] } })
   check('a shared user is refused too', !shared.ok, shared.ok ? 'IT WAS ALLOWED' : String(shared.status))
 }
 
-console.log('\n49. An empty revoke selection is refused')
+console.log('\n50. Invalid, unknown and deleted ids are handled safely')
 seedRegister()
 {
-  await call(controller.bulkShare, { ...asManager, body: { userIds: [USER_B] } })
-  updateManyCalls.length = 0
-
-  const empty = await call(controller.bulkRevokeSharing, { ...asManager, body: { userIds: [] } })
-  check('refused', !empty.ok, empty.ok ? 'IT WAS ALLOWED' : String(empty.status))
-  check('400', empty.status === 400, String(empty.status))
-  check('updateMany was never called', updateManyCalls.length === 0)
-
-  const onlyOwner = await call(controller.bulkRevokeSharing, { ...asManager, body: { userIds: [MANAGER] } })
-  check('a selection of just the owner is refused too', !onlyOwner.ok,
-    onlyOwner.ok ? 'IT WAS ALLOWED' : String(onlyOwner.status))
-  check('B still holds access', mine().every((l) => l.sharedWith.map(String).includes(USER_B)))
-}
-
-console.log('\n50. Revoke handles ids that are invalid, unknown, or deleted')
-seedRegister()
-{
-  const malformed = await call(controller.bulkRevokeSharing, { ...asManager, body: { userIds: ['not-an-id'] } })
+  const malformed = await call(controller.bulkShare, { ...asManager, body: { userIds: ['not-an-id'] } })
   check('a malformed id is rejected by the schema', !malformed.ok,
     malformed.ok ? 'IT WAS ALLOWED' : String(malformed.status))
 
-  const unknown = await call(controller.bulkRevokeSharing, {
+  const unknown = await call(controller.bulkShare, {
     ...asManager, body: { userIds: ['0000000000000000000affff'] },
   })
-  check('an id matching nobody is accepted and removes nothing', unknown.ok,
-    unknown.ok ? '' : unknown.message)
-  check('nothing was modified', unknown.payload?.data?.modifiedCount === 0)
+  check('an id matching no user is refused as an addition', !unknown.ok,
+    unknown.ok ? 'IT WAS ALLOWED' : String(unknown.status))
+  check('400', unknown.status === 400, String(unknown.status))
+  check('nothing was written', mine().every((l) => l.sharedWith.length === 0))
 
   /*
-   * A deleted account keeps its stale grant unless revoke can name it — the
-   * grant path refuses deleted users, so if revoke did too this would be the
-   * one entry nobody could ever clean up.
+   * A deleted account keeps a stale grant unless it can be un-ticked. Additions
+   * are validated; removals are not, so cleaning one up is always possible.
    */
   seedRegister()
   rows[0].sharedWith = [DELETED_U]
-  const stale = await call(controller.bulkRevokeSharing, { ...asManager, body: { userIds: [DELETED_U] } })
-  check('a DELETED account can still be revoked', stale.ok, stale.ok ? '' : stale.message)
-  check('the stale grant was cleaned up', rows[0].sharedWith.length === 0,
-    JSON.stringify(rows[0].sharedWith))
+  rows[1].sharedWith = [DELETED_U]
+  const stale = await call(controller.bulkShare, { ...asManager, body: { userIds: [] } })
+  check('a DELETED account can still be un-ticked', stale.ok, stale.ok ? '' : stale.message)
+  check('the stale grant was cleaned up', mine().every((l) => l.sharedWith.length === 0),
+    JSON.stringify(mine().map((l) => l.sharedWith)))
 }
 
-console.log('\n51. Revoke never deletes an enquiry or changes an owner')
+console.log('\n51. Bulk sharing never deletes an enquiry or changes an owner')
 seedRegister()
 {
   const countBefore = rows.length
   await call(controller.bulkShare, { ...asManager, body: { userIds: [USER_B, USER_C] } })
-  await call(controller.bulkRevokeSharing, { ...asManager, body: { userIds: [USER_B, USER_C] } })
+  await call(controller.bulkShare, { ...asManager, body: { userIds: [] } })
 
   check('no enquiry was deleted', rows.length === countBefore, `${rows.length} of ${countBefore}`)
   check('deleteOne was never called', deleteCalls.length === 0)
@@ -1059,13 +1113,13 @@ seedRegister()
   check('no contact write', contactWrites.length === 0)
 }
 
-console.log('\n52. Revoke touches only sharedWith, no other Lead field')
+console.log('\n52. Bulk sharing touches only sharedWith, no other Lead field')
 seedRegister()
 {
   await call(controller.bulkShare, { ...asManager, body: { userIds: [USER_B] } })
   const snapshot = mine().map((l) => JSON.stringify({ ...l, sharedWith: null }))
 
-  await call(controller.bulkRevokeSharing, { ...asManager, body: { userIds: [USER_B] } })
+  await call(controller.bulkShare, { ...asManager, body: { userIds: [USER_C] } })
   const after = mine().map((l) => JSON.stringify({ ...l, sharedWith: null }))
 
   check('every other field is byte-identical', JSON.stringify(snapshot) === JSON.stringify(after))
@@ -1073,23 +1127,23 @@ seedRegister()
     mine().every((l) => l.reference && l.stage === 'active' && l.isDeleted === false))
 }
 
-console.log('\n53. One audit entry for a bulk revoke, naming what moved')
+console.log('\n53. One audit entry, naming both halves')
 seedRegister()
 {
   await call(controller.bulkShare, { ...asManager, body: { userIds: [USER_B, USER_C] } })
   audits.length = 0
 
-  await call(controller.bulkRevokeSharing, { ...asManager, body: { userIds: [USER_B] } })
+  await call(controller.bulkShare, { ...asManager, body: { userIds: [USER_B, USER_D] } })
   check('exactly one audit entry', audits.length === 1, String(audits.length))
 
   const entry = audits[0]
-  check('it is the revoke event', entry?.action === 'lead.sharing_revoked', String(entry?.action))
-  check('it is marked as a bulk revoke',
-    entry?.metadata?.bulk === true && entry?.metadata?.operation === 'revoke')
-  check('it names who lost access', (entry?.metadata?.removed ?? []).includes(USER_B),
+  check('it reuses lead.sharing_updated', entry?.action === 'lead.sharing_updated', String(entry?.action))
+  check('it is marked as bulk', entry?.metadata?.bulk === true)
+  check('it names who gained access', (entry?.metadata?.added ?? []).map(String).join(',') === USER_D,
+    JSON.stringify(entry?.metadata?.added))
+  check('it names who lost access', (entry?.metadata?.removed ?? []).map(String).join(',') === USER_C,
     JSON.stringify(entry?.metadata?.removed))
-  check('it records how many enquiries changed', entry?.metadata?.modified === 2,
-    String(entry?.metadata?.modified))
+  check('it records the final set size', entry?.metadata?.total === 2, String(entry?.metadata?.total))
   check('it records the unchanged owner', String(entry?.metadata?.owner) === MANAGER)
 }
 
@@ -1103,7 +1157,9 @@ seedRegister()
   await call(controller.bulkShare, { ...asManager, body: { userIds: [USER_B, USER_C] } })
   const after = await call(controller.bulkSharingPreview, { ...asManager })
   const ids = (after.payload?.data?.sharedUserIds ?? []).map(String)
-  check('both holders are reported', ids.includes(USER_B) && ids.includes(USER_C), JSON.stringify(ids))
+  check('both holders are reported — these are the boxes that arrive ticked',
+    ids.includes(USER_B) && ids.includes(USER_C), JSON.stringify(ids))
+  check('a user with no access is NOT reported', ids.includes(USER_D) === false)
   check('the lead count is still right', after.payload?.data?.leadCount === 2)
 
   const asSales = await call(controller.bulkSharingPreview, { ...asB })
@@ -1111,10 +1167,9 @@ seedRegister()
     (asSales.payload?.data?.sharedUserIds ?? []).length === 0)
 }
 
-console.log('\n55. Share, revoke and individual sharing compose correctly')
+console.log('\n55. Individual and bulk sharing compose correctly')
 seedRegister()
 {
-  // Bulk share to two, then individually add a third to one enquiry only.
   await call(controller.bulkShare, { ...asManager, body: { userIds: [USER_B, USER_C] } })
   await call(controller.updateSharing, {
     ...asManager, params: { id: LEAD_ID }, body: { userIds: [USER_B, USER_C, USER_D] },
@@ -1124,13 +1179,15 @@ seedRegister()
   const other = () => mine().find((l) => String(l._id) === '00000000000000000000bbbb')
   check('the second still has two', other().sharedWith.length === 2)
 
-  // Bulk revoke one of the two originals.
-  await call(controller.bulkRevokeSharing, { ...asManager, body: { userIds: [USER_B] } })
+  // A bulk save unticking B. D is a current holder (on one enquiry) and stays
+  // ticked, so it must not be promoted to the second enquiry.
+  await call(controller.bulkShare, { ...asManager, body: { userIds: [USER_C, USER_D] } })
   check('B is gone from both', mine().every((l) => !l.sharedWith.map(String).includes(USER_B)))
   check('C survives on both', mine().every((l) => l.sharedWith.map(String).includes(USER_C)))
-  check('D survives on the first only',
+  check('D keeps its partial grant and is not promoted',
     rows[0].sharedWith.map(String).includes(USER_D) &&
-    !other().sharedWith.map(String).includes(USER_D))
+    !other().sharedWith.map(String).includes(USER_D),
+    JSON.stringify(mine().map((l) => l.sharedWith)))
   check('ownership unchanged throughout', mine().every((l) => String(l.owner) === MANAGER))
   check('no enquiry was deleted', deleteCalls.length === 0)
 }

@@ -164,27 +164,18 @@ leadRouter.get('/shareable-users', controller.shareableUsers)
  * `/:id/sharing` further down either: that route's second segment must be the
  * literal "sharing", and here it is "bulk".
  *
+ * The PUT takes the desired final set of people and applies the difference —
+ * granting and revoking in one call — so there is no separate revoke route to
+ * keep in step with it.
+ *
  * No permission guard on the route. The handler checks the caller's role and —
- * far more importantly — scopes its update to `{ owner: <session user> }`, so
+ * far more importantly — scopes its updates to `{ owner: <session user> }`, so
  * the endpoint cannot reach another manager's enquiries however it is called.
  * `idempotent()` on the write, matching every other mutation on this router,
- * though the `$addToSet` underneath is idempotent on its own.
+ * though a repeat save computes an empty difference and writes nothing anyway.
  */
 leadRouter.get('/sharing/bulk', controller.bulkSharingPreview)
 leadRouter.put('/sharing/bulk', idempotent(), controller.bulkShare)
-
-/*
- * Taking that access back.
- *
- * A third segment rather than a verb on the grant, so the two operations are
- * separate URLs that cannot be confused for one another in a log or a
- * permission rule — and registered here with the other literal paths, well
- * before `/:id`, for the same reason they are.
- *
- * Same guard as the grant above: `canBulkShare` in the handler, plus a filter
- * scoped to `{ owner: <session user> }` that no request body can influence.
- */
-leadRouter.put('/sharing/bulk/revoke', idempotent(), controller.bulkRevokeSharing)
 
 leadRouter.get('/', controller.list)
 

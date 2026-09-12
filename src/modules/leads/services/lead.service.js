@@ -41,6 +41,23 @@ const SORT_OPTIONS = {
  */
 export function buildLeadFilter({
   owner,
+  /**
+   * The reader, when enquiries shared with them should be included.
+   *
+   * Opt-in and off by default, which is the whole safety property: every
+   * existing caller omits it and gets `{ owner }` exactly as before — the same
+   * filter object, byte for byte, serving the same index. Only a caller that
+   * passes this sees any difference.
+   *
+   * It is deliberately a separate parameter from `owner` rather than a flag on
+   * it. `owner` still means "whose register is this", and the two are the same
+   * value for the ordinary case; conflating them would make "include shared"
+   * indistinguishable from "read somebody else's register".
+   *
+   * Not passed by the export or the campaign audience — both stay owner-only,
+   * by decision rather than by omission. See their call sites.
+   */
+  viewer = null,
   stage = null,
   stages = null,
   city = null,
@@ -68,7 +85,36 @@ export function buildLeadFilter({
   search = null,
   includeDeleted = false,
 } = {}) {
-  const filter = { owner }
+  /**
+   * Who may see the rows this filter selects.
+   *
+   * ## Without `viewer`, this is byte-for-byte what it always was
+   *
+   * `{ owner }`, serving the `{ owner, isDeleted, quoteDate }` index. Every
+   * existing caller takes this branch, so no existing query plan changes.
+   *
+   * ## With `viewer`, the clause goes in `$and` — not `$or`
+   *
+   * This is the important detail. The `search` branch at the bottom of this
+   * function already assigns `filter.$or`, and a document has one `$or` key:
+   * writing the access clause there too would mean whichever ran second
+   * silently replaced the first. If search won, the access scope would vanish
+   * and a search would return matching enquiries **from every owner** — so the
+   * two must compose rather than share a key.
+   *
+   * `$and` composes with a sibling `$or` (and with every scalar key here) as a
+   * plain conjunction, so the result reads "(owner or shared) AND (search) AND
+   * (stage) AND …" whatever else is set. Access is therefore a factor of the
+   * query that no later branch can overwrite.
+   */
+  const filter = {}
+
+  if (viewer) {
+    filter.$and = [{ $or: [{ owner }, { sharedWith: viewer }] }]
+  } else {
+    filter.owner = owner
+  }
+
   if (!includeDeleted) filter.isDeleted = false
 
   if (stage) filter.stage = stage
@@ -253,7 +299,7 @@ export { resolveCompanyScope as resolveCompanyScopeForExport }
  *
  * @returns {Promise<{ items, pagination, facets }>}
  */
-export async function listLeads({ owner, page = 1, limit = 50, sort = '-quote', ...criteria }) {
+export async function listLeads({ owner, page = 1, limit = 50, sort = '-quote', viewer = null, ...criteria }) {
   /*
    * `owner` LAST, deliberately.
    *
@@ -263,8 +309,13 @@ export async function listLeads({ owner, page = 1, limit = 50, sort = '-quote', 
    * session's, turning every filter into a cross-user read. Today the query
    * schemas strip that key, so the order is the only thing standing between
    * this and an IDOR the moment somebody adds `owner` to one of them.
+   *
+   * `viewer` is pulled out of `criteria` by the signature above for exactly the
+   * same reason, and passed after the spread for the same one: it decides
+   * whether shared enquiries are included, so a caller-supplied `viewer` in the
+   * query string must never reach this. Null unless the controller sets it.
    */
-  const filter = buildLeadFilter({ ...criteria, owner })
+  const filter = buildLeadFilter({ ...criteria, owner, viewer })
 
   if (filter._companyScope) {
     const ids = await resolveCompanyScope(owner, filter._companyScope)
@@ -528,6 +579,13 @@ export async function resolveLeadAudience({ owner, criteria = {} }) {
    * session's, turning every filter into a cross-user read. Today the query
    * schemas strip that key, so the order is the only thing standing between
    * this and an IDOR the moment somebody adds `owner` to one of them.
+   */
+  /*
+   * No `viewer`, deliberately: a campaign audience is owner-only.
+   *
+   * Sharing grants read and edit on one enquiry, not permission to mail that
+   * customer as part of somebody else's campaign. Omitting the argument is what
+   * keeps this query identical to what it was before sharing existed.
    */
   const filter = buildLeadFilter({ ...criteria, owner, campaignEligible: true })
 

@@ -105,6 +105,36 @@ const leadSchema = new Schema(
     owner: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     createdBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
 
+    /**
+     * People granted access to this one enquiry, beyond its owner.
+     *
+     * ## It does not touch ownership
+     *
+     * `owner` above is unchanged and remains the scoping key for everything —
+     * the reference series, the company and contact records, the sync feed, the
+     * statistics. This is an additional read/write grant on a single enquiry and
+     * nothing more. Nobody in this array becomes an owner, and removing somebody
+     * from it returns the enquiry to exactly the state it was in before.
+     *
+     * ## What it deliberately does not grant
+     *
+     * Not deletion. `DELETE /leads/:id` loads through `loadLead(req)` with no
+     * sharing flag, so this array is invisible to it — a shared user gets a 404
+     * from the delete endpoint exactly as an unrelated user does. Not re-sharing
+     * either: managing the grant is the owner's (or the organization owner's),
+     * and a shared user cannot extend their own access to somebody else.
+     *
+     * ## Backward compatibility
+     *
+     * `default: []` and no `required`, so every enquiry written before this
+     * field existed reads back as "shared with nobody" and behaves exactly as it
+     * did. No migration, and no existing document is rewritten.
+     */
+    sharedWith: {
+      type: [{ type: Schema.Types.ObjectId, ref: 'User' }],
+      default: [],
+    },
+
     /** The business key. Unique per owner — see the note above. */
     reference: { type: String, required: true, trim: true, uppercase: true, maxlength: 64 },
 
@@ -306,6 +336,22 @@ leadSchema.index(
 /** Default list: newest enquiries first. */
 leadSchema.index({ owner: 1, isDeleted: 1, quoteDate: -1 })
 
+/**
+ * The shared-access register, mirroring the owner index above it.
+ *
+ * The register's query becomes `$or: [{ owner }, { sharedWith }]` for a reader
+ * who has enquiries shared with them. MongoDB serves an `$or` by taking an
+ * index per branch and merging, so without this the `sharedWith` branch is a
+ * collection scan and the whole list degrades to the speed of the slower half.
+ * The key order matches the owner index deliberately — same filter, same sort,
+ * so both branches are served the same way.
+ *
+ * Multikey, because `sharedWith` is an array. That is the normal case for an
+ * array field and costs one index entry per grant, of which there are a handful
+ * per enquiry at most.
+ */
+leadSchema.index({ sharedWith: 1, isDeleted: 1, quoteDate: -1 })
+
 /** Pipeline board, and the campaign audience query. */
 leadSchema.index({ owner: 1, stage: 1, isDeleted: 1 })
 
@@ -467,6 +513,19 @@ leadSchema.methods.toPublicJSON = function toPublicJSON() {
   return {
     ...this.toSummaryJSON(),
     internalNotes: this.internalNotes,
+    /*
+     * Who else may reach this enquiry.
+     *
+     * On the detail shape only, and deliberately not on `toSummaryJSON`: the
+     * register returns hundreds of rows and none of them renders this, so
+     * putting it there would add a user-id array per row for nothing. It is
+     * also the DTO the offline cache stores, and sharing is an online-only
+     * feature — see the sharing endpoints.
+     *
+     * Ids only. The Share dialog resolves them against the user list it has
+     * already loaded, so this carries no name or address.
+     */
+    sharedWith: (this.sharedWith ?? []).map((id) => id.toString()),
     stageHistory: this.stageHistory,
     campaigns: this.campaigns.map((id) => id.toString()),
     lastCampaignAt: this.lastCampaignAt,

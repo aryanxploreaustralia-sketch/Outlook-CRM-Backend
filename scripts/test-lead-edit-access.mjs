@@ -36,10 +36,30 @@ const REGISTER = {
 }
 let subject = REGISTER.manual
 
+/**
+ * Does this document satisfy one clause of an `$or`?
+ *
+ * The read and edit scopes became `$or: [{ owner }, { sharedWith }]` when lead
+ * sharing shipped, so a stub that only inspects a top-level `owner` key stops
+ * refusing anybody — the key is simply absent and its guard never fires. That
+ * is a hole in the harness, not in the scope: this file's job is to prove the
+ * refusals still happen, so it has to evaluate the query MongoDB is actually
+ * given.
+ */
+const satisfies = (doc, clause) => {
+  if (clause.owner !== undefined) return String(clause.owner) === String(doc.owner)
+  if (clause.sharedWith !== undefined) {
+    return (doc.sharedWith ?? []).some((id) => String(id) === String(clause.sharedWith))
+  }
+  return false
+}
+
 Lead.findOne = async (query) => {
   lastQuery = query
   // Honour the scope exactly as MongoDB would: an owner clause must match.
   if (query.owner !== undefined && String(query.owner) !== String(subject.owner)) return null
+  // ...and so must at least one branch of an `$or`.
+  if (Array.isArray(query.$or) && !query.$or.some((clause) => satisfies(subject, clause))) return null
   const doc = { ...subject }
   doc.save = async () => doc
   doc.moveToStage = () => {}

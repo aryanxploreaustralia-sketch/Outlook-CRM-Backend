@@ -161,6 +161,15 @@ export async function exportLeadsWorkbook({ owner, criteria = {} }) {
    * schemas strip that key, so the order is the only thing standing between
    * this and an IDOR the moment somebody adds `owner` to one of them.
    */
+  /*
+   * No `viewer`, deliberately: the export is owner-only.
+   *
+   * The register on screen may now include enquiries shared with the reader,
+   * so this is the one place the export intentionally does *not* mirror the
+   * list. Taking a workbook of somebody else's enquiries off the system is a
+   * different act from reading one of them, and it stays with the owner until
+   * it is asked for. Omitting the argument leaves this query exactly as it was.
+   */
   const filter = buildLeadFilter({ ...criteria, owner })
 
   // Country and state live on the company, so the list resolves them into a

@@ -142,6 +142,20 @@ leadRouter.post('/workbook/:importJob/rollback', controller.rollback)
  */
 leadRouter.get('/assignees', controller.assignees)
 
+/*
+ * The people an enquiry may be shared with.
+ *
+ * A literal path, registered with the others well before `/:id`, so Express
+ * never reads "shareable-users" as a lead id. No extra guard, for the same
+ * reason `/assignees` above carries none: it is readable by anyone the router
+ * has already authenticated and returns nothing but a name, an email and an id.
+ *
+ * Deliberately not behind `users.view`. That permission governs the admin
+ * console, and a Manager sharing their own enquiry should not need
+ * administrative access to pick a colleague from a list.
+ */
+leadRouter.get('/shareable-users', controller.shareableUsers)
+
 leadRouter.get('/', controller.list)
 
 /**
@@ -163,6 +177,28 @@ leadRouter.put('/:id', idempotent(), controller.update)
  * contact and company ids come off that document rather than out of the body.
  */
 leadRouter.put('/:id/full', idempotent(), controller.updateFull)
+
+/*
+ * Who one enquiry is shared with.
+ *
+ * Two path segments, so neither can be read as the single-field `PUT /:id`
+ * above or as the delete below. Both handlers load the enquiry through
+ * `loadLead` and then require `canManageSharing` — the owner or the
+ * organization owner — so a shared user can read and edit the enquiry but
+ * cannot extend that access to anybody else.
+ *
+ * No permission guard on the route: the check is per-record rather than
+ * per-role, and only the handler knows whose enquiry this is. `idempotent()`
+ * on the write, matching every other mutation on this router.
+ */
+leadRouter.get('/:id/sharing', controller.getSharing)
+leadRouter.put('/:id/sharing', idempotent(), controller.updateSharing)
+
+/*
+ * Deletion. Unchanged, and deliberately left out of the sharing work above:
+ * `controller.remove` loads with `loadLead(req)` and no `shared` flag, so being
+ * shared on an enquiry grants no ability to delete it.
+ */
 leadRouter.delete('/:id', idempotent(), controller.remove)
 
 // ---------------------------------------------------------------------------

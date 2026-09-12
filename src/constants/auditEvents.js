@@ -188,6 +188,15 @@ export const AUDIT_EVENTS = Object.freeze({
   LEAD_CREATED: { action: 'lead.created', category: LEAD, label: 'Created an enquiry', entityType: AUDIT_ENTITY.LEAD, severity: NOTICE },
   LEAD_UPDATED: { action: 'lead.updated', category: LEAD, label: 'Updated an enquiry', entityType: AUDIT_ENTITY.LEAD, severity: NOTICE },
   LEAD_DELETED: { action: 'lead.deleted', category: LEAD, label: 'Deleted an enquiry', entityType: AUDIT_ENTITY.LEAD, severity: CRITICAL },
+  /**
+   * Who may reach one enquiry changed.
+   *
+   * `NOTICE` rather than `CRITICAL`: it grants read and edit on a single record
+   * to a colleague who already has CRM access, which is a normal delegation —
+   * unlike a deletion, which destroys data. The entry names the ids added and
+   * removed, so the grant is reconstructable after the fact.
+   */
+  LEAD_SHARING_UPDATED: { action: 'lead.sharing_updated', category: LEAD, label: 'Changed who an enquiry is shared with', entityType: AUDIT_ENTITY.LEAD, severity: NOTICE },
   LEAD_IMPORTED: { action: 'lead.imported', category: LEAD, label: 'Imported enquiries', entityType: AUDIT_ENTITY.LEAD, severity: NOTICE },
   /**
    * Pre-existing. Written before this phase with exactly this action string, so

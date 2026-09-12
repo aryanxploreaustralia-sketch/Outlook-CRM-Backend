@@ -62,9 +62,28 @@ const wrap = (doc, kind) => {
   return d
 }
 
+/**
+ * Does this document satisfy one clause of an `$or`?
+ *
+ * The edit scope became `$or: [{ owner }, { sharedWith }]` when lead sharing
+ * shipped, so a stub that only inspects a top-level `owner` key stops refusing
+ * anybody — the key is simply absent and its guard never fires. That is a hole
+ * in the harness, not in the scope: case 8 below exists to prove a different
+ * consultant is refused, so the stub has to evaluate the query MongoDB is
+ * actually given.
+ */
+const satisfies = (doc, clause) => {
+  if (clause.owner !== undefined) return String(clause.owner) === String(doc.owner)
+  if (clause.sharedWith !== undefined) {
+    return (doc.sharedWith ?? []).some((id) => String(id) === String(clause.sharedWith))
+  }
+  return false
+}
+
 Lead.findOne = async (q) => {
   queries.lead = q
   if (q.owner !== undefined && String(q.owner) !== String(state.lead.owner)) return null
+  if (Array.isArray(q.$or) && !q.$or.some((clause) => satisfies(state.lead, clause))) return null
   return wrap(state.lead, 'lead')
 }
 Contact.findOne = async (q) => {

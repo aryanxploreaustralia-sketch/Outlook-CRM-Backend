@@ -181,22 +181,81 @@ function canReachAnyLead(req) {
  * console's job, where `leads.delete` is checked, and widening it here would be
  * a change to destructive behaviour nobody asked for.
  */
-async function loadLead(req, { anyOwner = false } = {}) {
+/**
+ * @param {object}   req
+ * @param {object}  [options]
+ * @param {boolean} [options.anyOwner] Let the organization owner reach it.
+ * @param {boolean} [options.shared]
+ *   Let somebody the enquiry was explicitly shared with reach it.
+ *
+ *   **Opt-in, and off by default.** This is what keeps deletion owner-only:
+ *   `remove` calls `loadLead(req)` with no options, so `sharedWith` is not even
+ *   part of the query it runs and a shared user gets the same 404 an unrelated
+ *   user gets. Read and update pass it; nothing else does.
+ */
+async function loadLead(req, { anyOwner = false, shared = false } = {}) {
   const { id } = z.object({ id: objectId }).parse(req.params)
 
-  const scope =
-    anyOwner && canReachAnyLead(req)
-      ? { _id: id, isDeleted: false }
-      : { _id: id, owner: ownerOf(req), isDeleted: false }
+  const me = ownerOf(req)
+
+  /*
+   * Three scopes, narrowest last.
+   *
+   * The organization owner's branch is untouched. The middle branch is the new
+   * one, and it is additive: `$or` widens the existing owner match by exactly
+   * one alternative and nothing else — same `_id`, same `isDeleted`. The final
+   * branch is the original, and it is still what every caller that does not ask
+   * for sharing receives.
+   */
+  let scope
+  if (anyOwner && canReachAnyLead(req)) {
+    scope = { _id: id, isDeleted: false }
+  } else if (shared) {
+    scope = { _id: id, isDeleted: false, $or: [{ owner: me }, { sharedWith: me }] }
+  } else {
+    scope = { _id: id, owner: me, isDeleted: false }
+  }
 
   const lead = await Lead.findOne(scope)
   if (!lead) throw ApiError.notFound('No lead with that id exists.')
   return lead
 }
 
-/** Whether this caller may edit this enquiry. The button and the guard agree. */
-function canEditLead(req, lead) {
+/** Whether this caller holds an explicit share on this enquiry. */
+function isSharedWith(req, lead) {
+  const me = String(ownerOf(req))
+  return (lead.sharedWith ?? []).some((id) => String(id) === me)
+}
+
+/**
+ * Whether this caller may change who the enquiry is shared with.
+ *
+ * Deliberately **not** `canEditLead`. A shared user can edit the enquiry, and
+ * if that also let them manage the share list they could grant their own access
+ * to anybody — a shared reader quietly becomes a distributor of somebody else's
+ * register. Sharing is the owner's to give, so this is the owner and the
+ * organization owner, and nobody else.
+ */
+function canManageSharing(req, lead) {
   return String(lead.owner) === String(ownerOf(req)) || canReachAnyLead(req)
+}
+
+/**
+ * Whether this caller may edit this enquiry. The button and the guard agree.
+ *
+ * Somebody the enquiry is shared with may edit it, which is the point of the
+ * grant — so they are added here alongside the owner. The guard this mirrors is
+ * `loadLead(…, { shared: true })` on the two update endpoints, and the two now
+ * answer the same question the same way.
+ *
+ * Deletion is not governed by this function and does not gain anything from it.
+ */
+function canEditLead(req, lead) {
+  return (
+    String(lead.owner) === String(ownerOf(req)) ||
+    isSharedWith(req, lead) ||
+    canReachAnyLead(req)
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -212,6 +271,19 @@ export const list = asyncHandler(async (req, res) => {
     // `owner` after the spread: the session decides whose register this is,
     // never the query string. See the note in `buildLeadFilter`'s callers.
     owner: ownerOf(req),
+    /*
+     * Include the enquiries other people have shared with this reader.
+     *
+     * After the spread for the same reason `owner` is: it widens what the query
+     * returns, so it must come from the session and never from `req.query`.
+     * `listQuerySchema` has no `viewer` key and Zod strips unknown ones, so a
+     * client cannot supply it — this line is the belt to that braces.
+     *
+     * The value is the caller's own id, so the register reads "mine, plus what
+     * was shared with me". A reader with no shares sees precisely what they saw
+     * before: the `$or`'s second branch matches nothing.
+     */
+    viewer: ownerOf(req),
     stages: query.stages ? query.stages.split(',').map((s) => s.trim()).filter(Boolean) : null,
     campaignEligible: query.campaignEligible === undefined ? null : query.campaignEligible === 'true',
   })
@@ -564,7 +636,7 @@ async function resolveAssignee(assignTo) {
 
 /** GET /api/v1/leads/:id */
 export const getById = asyncHandler(async (req, res) => {
-  const lead = await loadLead(req, { anyOwner: true })
+  const lead = await loadLead(req, { anyOwner: true, shared: true })
 
   const [company, contact, holder] = await Promise.all([
     lead.company ? Company.findById(lead.company) : null,
@@ -590,6 +662,16 @@ export const getById = asyncHandler(async (req, res) => {
        * only stops the UI offering something the API would refuse.
        */
       canEdit: canEditLead(req, lead),
+      /*
+       * The server's own answer to "may I change who this is shared with?",
+       * for the same reason `canEdit` above is one: the Share control is then
+       * rendered from the rule the sharing endpoints enforce rather than from
+       * a client-side comparison that could drift from it.
+       *
+       * Narrower than `canEdit` on purpose — a shared user may edit the
+       * enquiry but may not pass that access on.
+       */
+      canShare: canManageSharing(req, lead),
       /** Shown as "Assigned to". Null only for an enquiry with no owner. */
       owner: holder
         ? { id: String(holder._id), name: holder.displayName ?? holder.email ?? 'Unnamed user' }
@@ -633,7 +715,7 @@ export const updateFull = asyncHandler(async (req, res) => {
   // payload is known to be acceptable.
   const payload = fullUpdateSchema.parse(req.body)
 
-  let lead = await loadLead(req, { anyOwner: true })
+  let lead = await loadLead(req, { anyOwner: true, shared: true })
   lead = await claimVersion({ Model: Lead, doc: lead, expected: expectedVersionOf(req), entity: 'leads' })
 
   /*
@@ -737,7 +819,7 @@ export const updateFull = asyncHandler(async (req, res) => {
 
 /** PUT /api/v1/leads/:id */
 export const update = asyncHandler(async (req, res) => {
-  let lead = await loadLead(req, { anyOwner: true })
+  let lead = await loadLead(req, { anyOwner: true, shared: true })
   const data = updateLeadSchema.parse(req.body)
 
   /*
@@ -898,6 +980,203 @@ export const remove = asyncHandler(async (req, res) => {
   })
 
   return sendSuccess(res, { message: 'Lead deleted.', data: { id: leadId.toString(), deleted: true } })
+})
+
+// ---------------------------------------------------------------------------
+// Sharing
+// ---------------------------------------------------------------------------
+
+/** The complete set of people an enquiry is shared with. Set semantics. */
+const sharingSchema = z.object({
+  /*
+   * The whole selection, not a list of changes.
+   *
+   * A client that submits an add-list and a remove-list can leave the two
+   * inconsistent, and the server then has to decide which it believes. A set
+   * has one meaning. `AssignPicker` on the front end already works this way.
+   */
+  userIds: z.array(objectId).max(100),
+})
+
+/**
+ * GET /api/v1/leads/shareable-users
+ *
+ * The people an enquiry may be shared with.
+ *
+ * ## Why this is not an admin endpoint
+ *
+ * Managing users lives behind `users.view`, which a Manager does not hold — so
+ * `GET /admin/users` is not available to the person doing the sharing. Rather
+ * than grant a CRM role an administrative permission, this follows the pattern
+ * `GET /leads/assignees` already set beside it: authenticated, no extra guard,
+ * and a payload of nothing but a name, an email and an id. It discloses no more
+ * than the assignee picker a lead form already shows.
+ *
+ * Active, not deleted, and holding CRM access — sharing an enquiry with
+ * somebody who cannot open the CRM would be a grant that does nothing.
+ */
+export const shareableUsers = asyncHandler(async (req, res) => {
+  const users = await User.find({
+    status: USER_STATUS.ACTIVE,
+    isDeleted: { $ne: true },
+    userPanelAccess: true,
+    // Not the caller: an enquiry is never "shared" with the person holding it,
+    // and offering the row invites a grant that reads as a no-op.
+    _id: { $ne: ownerOf(req) },
+  })
+    .select('displayName email')
+    .sort({ displayName: 1 })
+    .limit(500)
+    .lean()
+
+  return sendSuccess(res, {
+    message: `${users.length} user(s) available.`,
+    data: {
+      items: users.map((user) => ({
+        id: String(user._id),
+        name: user.displayName ?? user.email ?? 'Unnamed user',
+        email: user.email ?? null,
+      })),
+    },
+  })
+})
+
+/**
+ * GET /api/v1/leads/:id/sharing
+ *
+ * Who this enquiry is currently shared with, resolved to names.
+ *
+ * Readable by anybody who may manage the share list. A shared user is not shown
+ * the list: they can see the enquiry, which is what they were granted, and who
+ * else holds access is the owner's business.
+ */
+export const getSharing = asyncHandler(async (req, res) => {
+  const lead = await loadLead(req, { anyOwner: true, shared: true })
+
+  if (!canManageSharing(req, lead)) {
+    throw ApiError.forbidden('Only the enquiry’s owner can manage who it is shared with.')
+  }
+
+  const ids = lead.sharedWith ?? []
+
+  const users = ids.length
+    ? await User.find({ _id: { $in: ids } }).select('displayName email').lean()
+    : []
+
+  return sendSuccess(res, {
+    message: `${users.length} user(s) have access.`,
+    data: {
+      items: users.map((user) => ({
+        id: String(user._id),
+        name: user.displayName ?? user.email ?? 'Unnamed user',
+        email: user.email ?? null,
+      })),
+    },
+  })
+})
+
+/**
+ * PUT /api/v1/leads/:id/sharing
+ *
+ * Replaces the share list.
+ *
+ * ## What it deliberately does not do
+ *
+ * It never writes `owner`. The enquiry belongs to whoever it belonged to before
+ * this request, and sharing it with five people changes nothing about that.
+ * Nothing else on the document is touched either — this handler assigns exactly
+ * one field.
+ *
+ * Company and contact records are not read, written or re-scoped: sharing is
+ * access to one enquiry, not to the relationships hanging off it.
+ */
+export const updateSharing = asyncHandler(async (req, res) => {
+  const { userIds } = sharingSchema.parse(req.body)
+
+  let lead = await loadLead(req, { anyOwner: true, shared: true })
+
+  if (!canManageSharing(req, lead)) {
+    throw ApiError.forbidden('Only the enquiry’s owner can manage who it is shared with.')
+  }
+
+  lead = await claimVersion({ Model: Lead, doc: lead, expected: expectedVersionOf(req), entity: 'leads' })
+
+  /*
+   * Every id is checked before anything is written.
+   *
+   * An id that names a deleted account, a suspended one, or somebody without
+   * CRM access would be a grant that silently does nothing — the reader would
+   * see a name in the list and the person would never see the enquiry. Refusing
+   * is the honest answer, and it is the same eligibility rule
+   * `shareableUsers` above lists by, so the picker cannot offer a value this
+   * endpoint then rejects.
+   *
+   * A `Set` is what removes duplicates, so the array can never hold the same
+   * user twice however the client assembled it.
+   */
+  const requested = [...new Set(userIds.map(String))]
+
+  // The owner is not a shared user. Silently dropped rather than refused: the
+  // grant is meaningless rather than wrong, and erroring on it would make a
+  // harmless client mistake look like a failure.
+  const withoutOwner = requested.filter((id) => id !== String(lead.owner))
+
+  if (withoutOwner.length > 0) {
+    const eligible = await User.find({
+      _id: { $in: withoutOwner },
+      status: USER_STATUS.ACTIVE,
+      isDeleted: { $ne: true },
+      userPanelAccess: true,
+    })
+      .select('_id')
+      .lean()
+
+    if (eligible.length !== withoutOwner.length) {
+      throw ApiError.badRequest(
+        'One or more of those users cannot be given access. They may have been deactivated — reopen the dialog to refresh the list.',
+      )
+    }
+  }
+
+  /*
+   * What actually changed, computed before the write so the audit entry can
+   * name the additions and the removals rather than just the final set. A log
+   * saying "sharing updated" answers nothing six months later.
+   */
+  const before = (lead.sharedWith ?? []).map(String)
+  const added = withoutOwner.filter((id) => !before.includes(id))
+  const removed = before.filter((id) => !withoutOwner.includes(id))
+
+  lead.sharedWith = withoutOwner
+  await lead.save()
+
+  await recordAudit({
+    req,
+    event: 'LEAD_SHARING_UPDATED',
+    summary:
+      added.length || removed.length
+        ? `Updated who the enquiry ${lead.reference} is shared with`
+        : `Left the sharing on enquiry ${lead.reference} unchanged`,
+    target: { id: String(lead._id), name: lead.reference },
+    refs: { leadId: lead._id },
+    affectedCount: added.length + removed.length,
+    metadata: {
+      added,
+      removed,
+      total: withoutOwner.length,
+      // Who the enquiry belongs to, recorded to make it evident in the log that
+      // ownership is unchanged by this action.
+      owner: String(lead.owner),
+    },
+  })
+
+  return sendSuccess(res, {
+    message:
+      withoutOwner.length === 0
+        ? 'This enquiry is no longer shared.'
+        : `Shared with ${withoutOwner.length} user(s).`,
+    data: { id: String(lead._id), sharedWith: withoutOwner },
+  })
 })
 
 // ---------------------------------------------------------------------------

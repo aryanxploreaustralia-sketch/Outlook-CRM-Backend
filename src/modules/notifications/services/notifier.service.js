@@ -205,7 +205,12 @@ export function linkFor(type, target = {}) {
     case NOTIFICATION_TYPE.CAMPAIGN_FAILED:
       return '/admin/campaigns'
     case NOTIFICATION_TYPE.LEAD_ASSIGNED:
+    case NOTIFICATION_TYPE.LEAD_SHARED:
+    case NOTIFICATION_TYPE.LEAD_STAGE_CHANGED:
       return id ? `/leads/${id}` : '/leads'
+    // No link: the reader has just lost access, so the enquiry would not open.
+    case NOTIFICATION_TYPE.LEAD_SHARING_REVOKED:
+      return null
     case NOTIFICATION_TYPE.LEAD_IMPORTED:
     case NOTIFICATION_TYPE.WORKBOOK_UPLOADED:
     case NOTIFICATION_TYPE.WORKBOOK_SYNC_FINISHED:

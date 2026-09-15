@@ -42,6 +42,7 @@
     "test:lead-delete": "node scripts/test-lead-delete.mjs",
     "test:lead-sharing": "node scripts/test-lead-sharing.mjs",
     "test:lead-assignment": "node scripts/test-lead-assignment.mjs",
+    "test:lead-notifications": "node scripts/test-lead-notifications.mjs",
     "test:google-relink": "node scripts/test-google-identity-relink.mjs",
     "test:signature-inline": "node scripts/test-signature-inline.mjs",
     "diagnose:signature": "node scripts/diagnose-signature.mjs",

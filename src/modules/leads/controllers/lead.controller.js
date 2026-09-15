@@ -13,6 +13,13 @@ import { asyncHandler } from '../../../utils/asyncHandler.js'
 import { sendSuccess } from '../../../utils/ApiResponse.js'
 import { claimVersion, expectedVersionOf } from '../../../utils/optimisticConcurrency.js'
 import { recordAudit } from '../../audit/services/auditRecorder.service.js'
+import {
+  notifyBulkSharingChanged,
+  notifyBulkStageChanged,
+  notifyLeadAssigned,
+  notifyLeadSharingChanged,
+  notifyLeadStageChanged,
+} from '../../notifications/services/leadNotifications.service.js'
 import { Company } from '../../../models/company.model.js'
 import { Contact } from '../../../models/contact.model.js'
 import { Lead } from '../../../models/lead.model.js'
@@ -437,6 +444,12 @@ export const create = asyncHandler(async (req, res) => {
     metadata: { mailSent: Boolean(result.mail?.sent), warnings: result.warnings ?? [] },
   })
 
+  // Created for a colleague: that is an assignment, and it is their business.
+  // `notify` never throws, so the response is not held for the bell.
+  if (String(owner) !== String(creator)) {
+    void notifyLeadAssigned({ lead: result.lead, assignee: owner, actor: req.auth.user })
+  }
+
   return sendSuccess(res, {
     statusCode: HTTP_STATUS.CREATED,
     message: result.mail.sent
@@ -741,6 +754,9 @@ export const updateFull = asyncHandler(async (req, res) => {
     throw ApiError.notFound('This enquiry has no company record to update.')
   }
 
+  /** The stage as stored, so a real move can be announced after the save. */
+  const stageBefore = lead.stage
+
   // --- apply, in memory ----------------------------------------------------
   if (payload.lead) {
     const data = payload.lead
@@ -772,6 +788,10 @@ export const updateFull = asyncHandler(async (req, res) => {
     if (payload.lead) {
       await lead.save()
       applied.push('lead')
+
+      if (lead.stage !== stageBefore) {
+        void notifyLeadStageChanged({ lead, from: stageBefore, actor: req.auth.user })
+      }
     }
     if (payload.contact) {
       await contact.save()
@@ -831,6 +851,8 @@ export const update = asyncHandler(async (req, res) => {
    */
   lead = await claimVersion({ Model: Lead, doc: lead, expected: expectedVersionOf(req), entity: 'leads' })
 
+  const stageBefore = lead.stage
+
   if (data.stage && data.stage !== lead.stage) {
     lead.moveToStage(data.stage, { by: ownerOf(req), reason: data.stageReason ?? 'Changed in the CRM' })
   }
@@ -843,6 +865,10 @@ export const update = asyncHandler(async (req, res) => {
   }
 
   await lead.save()
+
+  if (lead.stage !== stageBefore) {
+    void notifyLeadStageChanged({ lead, from: stageBefore, actor: req.auth.user })
+  }
 
   await recordAudit({
     req,
@@ -873,11 +899,18 @@ export const bulkStage = asyncHandler(async (req, res) => {
   const leads = await Lead.find({ _id: { $in: ids }, owner, isDeleted: false })
 
   let moved = 0
+  const movedLeads = []
   for (const lead of leads) {
     if (lead.stage === stage) continue
     lead.moveToStage(stage, { by: owner, reason: reason ?? 'Bulk update' })
     await lead.save()
     moved += 1
+    movedLeads.push(lead)
+  }
+
+  // One bell per person holding any of them, carrying the count — never one per enquiry.
+  if (movedLeads.length > 0) {
+    void notifyBulkStageChanged({ leads: movedLeads, stage, actor: req.auth.user })
   }
 
   return sendSuccess(res, {
@@ -1228,6 +1261,12 @@ export const updateSharing = asyncHandler(async (req, res) => {
   lead.sharedWith = withoutOwner
   await lead.save()
 
+  // Only the people whose access actually changed. A repeat save computes empty
+  // lists, so it raises nothing.
+  if (added.length > 0 || removed.length > 0) {
+    void notifyLeadSharingChanged({ lead, added, removed, actor: req.auth.user })
+  }
+
   await recordAudit({
     req,
     event: 'LEAD_SHARING_UPDATED',
@@ -1419,6 +1458,17 @@ export const bulkShare = asyncHandler(async (req, res) => {
       $addToSet: { sharedWith: { $each: toAdd } },
     })
     addedTo = result.modifiedCount ?? 0
+  }
+
+  // One bell per affected person for the whole register, not one per enquiry.
+  if (matchedCount > 0 && (toAdd.length > 0 || toRemove.length > 0)) {
+    void notifyBulkSharingChanged({
+      owner,
+      added: toAdd,
+      removed: toRemove,
+      leadCount: matchedCount,
+      actor: req.auth.user,
+    })
   }
 
   /*

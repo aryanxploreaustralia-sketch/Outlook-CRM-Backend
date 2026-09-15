@@ -1,30 +1,28 @@
 /**
  * Health controller.
  *
- * Controllers stay thin: translate HTTP in, delegate to a service, translate
- * HTTP out. No business logic lives here.
+ * HTTP adapter only: translates the health report into a status code and a
+ * response body. All decision-making lives in the health service.
  */
 
 import { HTTP_STATUS } from '../constants/httpStatus.js'
 import { buildHealthReport } from '../services/health.service.js'
 import { asyncHandler } from '../utils/asyncHandler.js'
-import { sendSuccess } from '../utils/ApiResponse.js'
 
 /**
  * GET /api/v1/health
  *
- * Returns 200 when every critical dependency is up, and 503 when one is not, so
- * load balancers and uptime monitors can act on the status code alone without
- * parsing the body.
+ * Public liveness probe for uptime monitoring.
+ *
+ * 200 `{ "status": "ok" }` when healthy, 503 `{ "status": "degraded" }` when a
+ * critical dependency is down. The body is deliberately bare — no envelope, no
+ * timestamp, nothing about the infrastructure. Detailed diagnostics are served
+ * to administrators by `GET /api/v1/admin/system-health`.
  */
 export const getHealth = asyncHandler(async (req, res) => {
   const { healthy, report } = buildHealthReport()
 
-  return sendSuccess(res, {
-    statusCode: healthy ? HTTP_STATUS.OK : HTTP_STATUS.SERVICE_UNAVAILABLE,
-    message: healthy ? 'Service is healthy.' : 'Service is degraded.',
-    data: report,
-  })
+  return res.status(healthy ? HTTP_STATUS.OK : HTTP_STATUS.SERVICE_UNAVAILABLE).json(report)
 })
 
 export default { getHealth }

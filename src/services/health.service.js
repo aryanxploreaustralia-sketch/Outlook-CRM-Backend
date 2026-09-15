@@ -7,50 +7,31 @@
  */
 
 import { getDatabaseStatus } from '../config/database.js'
-import { config } from '../config/index.js'
 
 /**
- * Builds a full health report.
+ * Builds the public health report.
  *
- * @returns {{ healthy: boolean, report: object }}
+ * ## Public, so it says nothing but "ok" or "degraded"
+ *
+ * `/api/v1/health` is unauthenticated and rate-limit exempt, for uptime
+ * monitors. It used to return the environment, database name and host, the
+ * process id, memory, Node version and uptime — a map of the infrastructure for
+ * anyone who asked. None of that helps a monitor, which needs only the status
+ * code and one word.
+ *
+ * The detailed view still exists for the people who need it, behind
+ * authentication: `GET /api/v1/admin/system-health` (`adminHealth.service.js`).
+ *
+ * @returns {{ healthy: boolean, report: { status: 'ok' | 'degraded' } }}
  *   `healthy` drives the HTTP status code; `report` is the response payload.
  */
 export function buildHealthReport() {
-  const database = getDatabaseStatus()
-
-  const memory = process.memoryUsage()
-  const toMb = (bytes) => Number((bytes / 1024 / 1024).toFixed(2))
-
   // The API is only considered healthy when its critical dependencies are.
-  const healthy = database.healthy
+  const healthy = getDatabaseStatus().healthy
 
   return {
     healthy,
-    report: {
-      status: healthy ? 'ok' : 'degraded',
-      service: config.app.name,
-      version: config.app.version,
-      environment: config.app.env,
-      uptimeSeconds: Number(process.uptime().toFixed(2)),
-      timestamp: new Date().toISOString(),
-      dependencies: {
-        database: {
-          status: database.status,
-          healthy: database.healthy,
-          name: database.name,
-          host: database.host,
-        },
-      },
-      runtime: {
-        node: process.version,
-        pid: process.pid,
-        memoryMb: {
-          rss: toMb(memory.rss),
-          heapUsed: toMb(memory.heapUsed),
-          heapTotal: toMb(memory.heapTotal),
-        },
-      },
-    },
+    report: { status: healthy ? 'ok' : 'degraded' },
   }
 }
 

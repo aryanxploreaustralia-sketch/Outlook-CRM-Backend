@@ -195,6 +195,17 @@ export const adminLeadQuerySchema = z.object({
   owner: z.string().regex(/^[a-f\d]{24}$/i).optional(),
 
   /**
+   * One company's enquiries, by the name stored on the lead.
+   *
+   * What "View queries" on the companies page sends. Deliberately separate from
+   * `search`: that one also matches a reference, a contact and an email
+   * address, so using it here would show a company's row count of 245 beside a
+   * table holding 248 — three of them somebody whose email happens to contain
+   * the word. This matches `companyName` exactly, case-insensitively.
+   */
+  company: z.string().trim().min(1).max(256).optional(),
+
+  /**
    * Which date the range applies to, named explicitly.
    *
    * A range filter that does not say what it filters is a guess. `updatedAt` is
@@ -223,6 +234,45 @@ export const adminLeadQuerySchema = z.object({
   /** Server-side paging. The monitor used to return a fixed newest-200 slice. */
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(200).default(50),
+})
+
+/**
+ * Query for `GET /admin/companies` — the company-wise enquiry overview.
+ *
+ * Deliberately a subset of the lead query above, because this page answers a
+ * narrower question: which companies send work, and how much. Every filter here
+ * is one the aggregation applies to the *leads* before grouping them, so the
+ * counts on a filtered page are the counts of what the filter describes rather
+ * than of the register as a whole.
+ *
+ * `search` matches the company name only. On the lead monitor it also matches a
+ * reference, a contact and an email, which is right for a register of enquiries
+ * and wrong for a list of companies.
+ */
+export const adminCompanyQuerySchema = z.object({
+  search: searchTerm,
+  /** Whose enquiries to count. Absent means everybody's. */
+  owner: z.string().regex(/^[a-f\d]{24}$/i).optional(),
+  city: z.string().trim().min(1).max(128).optional(),
+  market: enumList(MARKET_VALUES),
+  stage: enumList(LEAD_STAGE_VALUES),
+
+  /** The same named-field range the lead monitor uses, for the same reason. */
+  dateField: z.enum(['createdAt', 'quoteDate', 'updatedAt', 'travelDate']).default('quoteDate'),
+  preset: z.enum(DATE_PRESETS).optional(),
+  from: isoDate,
+  to: isoDate,
+
+  /**
+   * Row order. A whitelist, not a field name — a caller must not be able to
+   * name an arbitrary unindexed field to sort this aggregation by.
+   *
+   * `queries` (most work first) is the page's own question and the default.
+   */
+  sort: z.enum(['queries', 'latest', 'name']).default('queries'),
+
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(200).default(25),
 })
 
 /**

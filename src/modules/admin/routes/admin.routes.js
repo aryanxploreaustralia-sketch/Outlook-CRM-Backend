@@ -535,6 +535,19 @@ router.get(
 )
 
 /**
+ * The same enquiries, grouped by the company that sent them.
+ *
+ * Identical guard to `/leads` above and for exactly the same reason: it reads
+ * across every user's register, so the resource permission alone would hand a
+ * Viewer more than the CRM itself does.
+ */
+router.get(
+  '/companies',
+  requireAllPermissions([PERMISSIONS.LEADS_VIEW, PERMISSIONS.ANALYTICS_VIEW]),
+  controller.getAdminCompanies,
+)
+
+/**
  * The dashboard calendar.
  *
  * The same two capabilities as the monitor above, for the same reason: this

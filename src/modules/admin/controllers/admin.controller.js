@@ -59,6 +59,7 @@ import {
 import {
   getAdminLeadDetail as loadAdminLeadDetail,
   listAdminCampaigns,
+  listAdminCompanies,
   listAdminLeads,
 } from '../services/adminMonitoring.service.js'
 import { deleteUser, restoreUser } from '../services/adminUserLifecycle.service.js'
@@ -84,6 +85,7 @@ import {
   adminCampaignQuerySchema,
   adminCalendarDaySchema,
   adminCalendarQuerySchema,
+  adminCompanyQuerySchema,
   adminLeadQuerySchema,
   adminRolePermissionsSchema,
 } from '../validators/admin.validator.js'
@@ -1062,6 +1064,21 @@ export const getAdminCalendarDay = asyncHandler(async (req, res) => {
   return sendSuccess(res, {
     message: 'Day loaded.',
     data: await loadAdminCalendarDay(query),
+  })
+})
+
+/**
+ * GET /api/v1/admin/companies
+ *
+ * The company-wise enquiry overview. Read-only, and scoped by the same guard as
+ * the lead monitor beside it: this counts across every user's register.
+ */
+export const getAdminCompanies = asyncHandler(async (req, res) => {
+  const query = adminCompanyQuerySchema.parse(req.query)
+
+  return sendSuccess(res, {
+    message: 'Companies loaded.',
+    data: await listAdminCompanies(query),
   })
 })
 

@@ -32,6 +32,7 @@ import { Mailbox } from '../../../models/mailbox.model.js'
 import { User } from '../../../models/user.model.js'
 import { CAMPAIGN_STATUS_LABELS } from '../../campaigns/constants/campaignConstants.js'
 import {
+  LEAD_STAGE,
   LEAD_STAGE_LABELS,
   MARKET_LABELS,
   MARKET_VALUES,
@@ -42,8 +43,13 @@ import { ACTIVE_LEAD_DAYS, STALE_LEAD_DAYS } from '../constants/adminConstants.j
 import { resolveRange } from '../validators/adminAnalytics.validator.js'
 
 /** Escapes a caller-supplied search term before it reaches a regex. */
+/** Escapes a user-supplied term so it cannot smuggle regex syntax into a query. */
+function escapeRegex(term) {
+  return String(term).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
 function safePattern(term) {
-  return new RegExp(String(term).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i')
+  return new RegExp(escapeRegex(term), 'i')
 }
 
 /** Resolves a set of user ids to display names in one query. */
@@ -223,6 +229,7 @@ export async function listAdminLeads(query = {}) {
     search,
     attention,
     owner,
+    company,
     dateField = 'travelDate',
     preset,
     from,
@@ -253,6 +260,17 @@ export async function listAdminLeads(query = {}) {
 
   if (attention === 'unassigned') filter.owner = null
   if (attention === 'stale') filter.updatedAt = { $lt: staleCutoffDate }
+
+  /*
+   * One company's enquiries, anchored.
+   *
+   * `^…$` rather than a contains match: "ABC Travels" must not also return
+   * "ABC Travels International", or the count on the companies page would
+   * disagree with the rows this returns. Case-insensitive because the workbook
+   * is typed by hand, which is the same reason the companies aggregation groups
+   * case-insensitively.
+   */
+  if (company) filter.companyName = new RegExp(`^${escapeRegex(company)}$`, 'i')
 
   /*
    * The date window, on whichever field the caller named.
@@ -473,6 +491,154 @@ export default { listAdminCampaigns, listAdminLeads }
  * @param {string} leadId
  * @returns {Promise<object>}
  */
+/**
+ * The company-wise enquiry overview.
+ *
+ * Answers "which companies send us work, and how much" across the whole
+ * deployment — one row per company, not per company *record*.
+ *
+ * ## Why it groups by name and not by `Company`
+ *
+ * `Company` is owner-scoped: `owner` is required on the model, so every
+ * consultant holds their own document for the same agency. Grouping by `_id`
+ * would therefore show "ABC Travels" once per consultant, each with a slice of
+ * the total, which is precisely the question this page exists to answer in one
+ * row. The name on the lead is the only field that identifies the company the
+ * same way across owners.
+ *
+ * Grouped case-insensitively (`toLower` on a trimmed name) because the register
+ * is typed by hand and "ABC Travels" and "ABC travels" are one agency. The
+ * label shown is the first spelling encountered, not the lowered key.
+ *
+ * ## Why an aggregation rather than the existing counts
+ *
+ * `Company.leadCount` exists but counts one owner's leads and knows nothing
+ * about stage, so it can answer neither "total across the business" nor the
+ * active/closed split. Nothing else in the codebase aggregates leads by
+ * company. This is the smallest read-only addition that answers the page's
+ * seven columns in one round trip.
+ *
+ * Read-only: no collection is written, and no existing query is changed.
+ *
+ * @param {object} query Parsed by `adminCompanyQuerySchema`.
+ */
+export async function listAdminCompanies(query = {}) {
+  const {
+    search,
+    owner,
+    city,
+    market,
+    stage,
+    dateField = 'quoteDate',
+    preset,
+    from,
+    to,
+    sort = 'queries',
+    page = 1,
+    limit = 25,
+  } = query
+
+  /*
+   * The filter runs over *leads*, before grouping.
+   *
+   * So a stage or a date range narrows what is counted rather than which
+   * companies appear, and the totals on screen are always the totals of what
+   * the filter describes. The same shape as the lead monitor's filter, minus
+   * the options that only make sense for a register of individual enquiries.
+   */
+  const filter = { isDeleted: false, companyName: { $nin: [null, ''] } }
+
+  if (owner) filter.owner = owner
+  if (city) filter.city = safePattern(city)
+  if (market?.length) filter.market = { $in: market }
+  if (stage?.length) filter.stage = { $in: stage }
+  if (search) filter.companyName = { $nin: [null, ''], $regex: safePattern(search) }
+
+  const hasDateFilter = Boolean(preset || from || to)
+  const { from: rangeFrom, to: rangeTo } = hasDateFilter
+    ? resolveRange({ preset, from, to })
+    : { from: null, to: null }
+
+  if (rangeFrom || rangeTo) {
+    filter[dateField] = {
+      ...(rangeFrom ? { $gte: rangeFrom } : {}),
+      ...(rangeTo ? { $lte: rangeTo } : {}),
+    }
+  }
+
+  const ORDER = {
+    queries: { total: -1, latestQueryAt: -1 },
+    latest: { latestQueryAt: -1, total: -1 },
+    name: { name: 1 },
+  }
+
+  /*
+   * One round trip: the page and the total count of groups.
+   *
+   * `$facet` because the number of *companies* cannot be derived from a page of
+   * them, and running the same grouping twice to learn it would double the work
+   * on the largest collection in the deployment.
+   */
+  const [result] = await Lead.aggregate([
+    { $match: filter },
+    {
+      $group: {
+        _id: { $toLower: { $trim: { input: '$companyName' } } },
+        name: { $first: '$companyName' },
+        total: { $sum: 1 },
+        active: { $sum: { $cond: [{ $eq: ['$stage', LEAD_STAGE.ACTIVE] }, 1, 0] } },
+        closed: { $sum: { $cond: [{ $eq: ['$stage', LEAD_STAGE.CLOSED] }, 1, 0] } },
+        confirmed: { $sum: { $cond: [{ $in: ['$stage', WON_STAGES] }, 1, 0] } },
+        // The latest enquiry, by the date the office actually quoted on, with
+        // the created date standing in for the rows that never carried one.
+        latestQueryAt: { $max: { $ifNull: ['$quoteDate', '$createdAt'] } },
+        owners: { $addToSet: '$owner' },
+      },
+    },
+    {
+      $facet: {
+        rows: [{ $sort: ORDER[sort] ?? ORDER.queries }, { $skip: (page - 1) * limit }, { $limit: limit }],
+        counted: [{ $count: 'companies' }],
+      },
+    },
+  ])
+
+  const rows = result?.rows ?? []
+  const totalCompanies = result?.counted?.[0]?.companies ?? 0
+
+  // One lookup for the page's owners, not one per row.
+  const names = await nameMap(rows.flatMap((row) => row.owners ?? []))
+
+  return {
+    items: rows.map((row) => ({
+      id: row._id,
+      name: row.name ?? '—',
+      total: row.total,
+      active: row.active,
+      closed: row.closed,
+      confirmed: row.confirmed,
+      latestQueryAt: row.latestQueryAt ?? null,
+      owners: (row.owners ?? [])
+        .filter(Boolean)
+        .map((id) => ({ id: String(id), name: names.get(String(id)) ?? 'Unknown user' }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    })),
+    pagination: {
+      page,
+      limit,
+      total: totalCompanies,
+      totalPages: Math.max(1, Math.ceil(totalCompanies / limit)),
+      hasNext: page * limit < totalCompanies,
+      hasPrevious: page > 1,
+    },
+    meta: {
+      /** The same facet the lead monitor offers, over the whole register. */
+      markets: MARKET_VALUES.map((value) => ({ value, label: MARKET_LABELS[value] ?? value })),
+      dateField,
+    },
+  }
+}
+
 export async function getAdminLeadDetail(leadId) {
   const lead = await Lead.findOne({ _id: leadId, isDeleted: false })
 

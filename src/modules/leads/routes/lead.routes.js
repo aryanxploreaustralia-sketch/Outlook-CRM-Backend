@@ -212,6 +212,14 @@ leadRouter.put('/:id/full', idempotent(), controller.updateFull)
  * per-role, and only the handler knows whose enquiry this is. `idempotent()`
  * on the write, matching every other mutation on this router.
  */
+/**
+ * One timestamped internal note.
+ *
+ * No extra guard: `addNote` loads the enquiry through the same rule that
+ * governs editing it, so whoever may edit a lead may annotate it.
+ */
+leadRouter.post('/:id/notes', controller.addNote)
+
 leadRouter.get('/:id/sharing', controller.getSharing)
 leadRouter.put('/:id/sharing', idempotent(), controller.updateSharing)
 

@@ -74,6 +74,47 @@ const fieldChangeSchema = new Schema(
  * collection, and it has to stay true even if mail history is cleared —
  * otherwise a reset would make the engine email everyone a second time.
  */
+/**
+ * One internal note, with the time it was written.
+ *
+ * ## Why this exists beside `internalNotes` rather than replacing it
+ *
+ * `internalNotes` is a single free-text field the workbook importer writes to
+ * and every listing renders, and consultants have been typing the date into it
+ * by hand. Replacing it would mean migrating that text and touching the
+ * importer, the exports, the remark cell and the admin views — so it stays
+ * exactly as it is, and keeps being shown as the enquiry's earlier notes.
+ *
+ * What is new is that a note added from now on is a *record*: it carries when
+ * it was written and who wrote it, so nobody types a date again.
+ *
+ * `createdAt` is stamped by the server on insert and never accepted from a
+ * client. A date a browser supplies is a date a browser can be wrong about —
+ * a stale tab, a travelling laptop, a clock nobody has set — and a note's
+ * timestamp is the one thing about it that has to be trustworthy.
+ */
+const leadNoteSchema = new Schema(
+  {
+    body: { type: String, required: true, trim: true, maxlength: 4000 },
+
+    /** Server time. Not settable by a request — see the note above. */
+    createdAt: { type: Date, default: Date.now, immutable: true },
+
+    createdBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+
+    /**
+     * The author's name as it read when the note was written.
+     *
+     * Denormalised deliberately: a note is a record of what somebody said at a
+     * moment, and it should still say who said it after they are renamed or
+     * their account is removed. `createdBy` remains for anyone who needs the
+     * live user.
+     */
+    createdByName: { type: String, trim: true, default: null, maxlength: 128 },
+  },
+  { _id: true, versionKey: false },
+)
+
 const autoMailSchema = new Schema(
   {
     status: {
@@ -202,6 +243,15 @@ const leadSchema = new Schema(
 
     /** The `Remark` column. Internal only — never sent to a customer. */
     internalNotes: { type: String, trim: true, default: null, maxlength: 4000 },
+
+    /**
+     * Timestamped notes, newest last.
+     *
+     * `default: []`, so every enquiry written before this field existed reads
+     * back as "no timestamped notes" and behaves exactly as it did. No
+     * migration, and no existing document is rewritten.
+     */
+    notes: { type: [leadNoteSchema], default: [] },
 
     /*
      * Where the enquiry came from — website, referral, email, walk-in.
@@ -513,6 +563,24 @@ leadSchema.methods.toPublicJSON = function toPublicJSON() {
   return {
     ...this.toSummaryJSON(),
     internalNotes: this.internalNotes,
+
+    /*
+     * On the detail shape only, like `sharedWith` below: the register returns
+     * hundreds of rows and none of them renders a note thread.
+     *
+     * Newest first, which is the order they are read in. The stored array grows
+     * chronologically — appending is what makes a note immutable — so the
+     * reversal happens here rather than in the database.
+     */
+    notes: [...(this.notes ?? [])]
+      .map((note) => ({
+        id: String(note._id),
+        body: note.body,
+        createdAt: note.createdAt ?? null,
+        createdBy: note.createdBy ? String(note.createdBy) : null,
+        createdByName: note.createdByName ?? null,
+      }))
+      .reverse(),
     /*
      * Who else may reach this enquiry.
      *

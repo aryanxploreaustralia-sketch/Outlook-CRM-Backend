@@ -838,6 +838,99 @@ export const updateFull = asyncHandler(async (req, res) => {
 })
 
 /** PUT /api/v1/leads/:id */
+/**
+ * One internal note. The text is all a client sends — see `addNote`.
+ *
+ * `text` is the documented field. `body` is accepted as an alias because the
+ * first cut of the client sent that name; accepting both costs one line and
+ * means a browser holding an older bundle does not get a validation error it
+ * cannot act on. No date field appears here, deliberately: a `createdAt` in a
+ * request is not a timestamp, it is a suggestion.
+ */
+const addNoteSchema = z
+  .object({
+    text: z.string().trim().min(1).max(4000).optional(),
+    body: z.string().trim().min(1).max(4000).optional(),
+  })
+  .transform((value, ctx) => {
+    const text = value.text ?? value.body
+
+    if (!text) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['text'], message: 'A note cannot be empty.' })
+      return z.NEVER
+    }
+
+    return { text }
+  })
+
+/**
+ * POST /api/v1/leads/:id/notes
+ *
+ * Appends one timestamped note.
+ *
+ * ## The server writes the time, and only the server
+ *
+ * The request carries the text and nothing else. `createdAt` is stamped here
+ * from the server clock and `createdBy` from the authenticated session, so a
+ * note's date cannot be typed, back-dated or forged by a client — which is the
+ * whole point of the change. It is also why this is its own endpoint rather
+ * than a field on the existing update: `PATCH /leads/:id` accepts a body the
+ * caller composes, and a timestamp accepted from a caller is not a timestamp.
+ *
+ * ## Access
+ *
+ * `loadLead(..., { shared: true })` — exactly the rule that governs editing the
+ * enquiry, so whoever may edit a lead may annotate it and nobody else. No new
+ * permission is introduced.
+ *
+ * ## Appended, never rewritten
+ *
+ * `$push` rather than a read-modify-write of the array: two consultants adding
+ * a note at the same moment both keep theirs. `internalNotes` is not touched,
+ * so the enquiry's earlier free-text notes survive exactly as they are.
+ */
+export const addNote = asyncHandler(async (req, res) => {
+  const lead = await loadLead(req, { anyOwner: true, shared: true })
+  const { text } = addNoteSchema.parse(req.body)
+
+  const note = {
+    body: text,
+    createdAt: new Date(),
+    createdBy: req.auth.user._id,
+    createdByName: req.auth.user.displayName ?? req.auth.user.email ?? null,
+  }
+
+  await Lead.updateOne({ _id: lead._id }, { $push: { notes: note } })
+
+  const saved = await Lead.findById(lead._id).select('notes')
+  const stored = saved?.notes?.at(-1)
+
+  await recordAudit({
+    req,
+    event: 'LEAD_UPDATED',
+    summary: `Added a note to the enquiry ${lead.reference}`,
+    target: { id: String(lead._id), name: lead.reference },
+    refs: { leadId: lead._id },
+    metadata: { changedFields: ['notes'] },
+  })
+
+  return sendSuccess(res, {
+    statusCode: HTTP_STATUS.CREATED,
+    message: 'Note added.',
+    data: {
+      note: stored
+        ? {
+            id: String(stored._id),
+            body: stored.body,
+            createdAt: stored.createdAt,
+            createdBy: stored.createdBy ? String(stored.createdBy) : null,
+            createdByName: stored.createdByName ?? null,
+          }
+        : null,
+    },
+  })
+})
+
 export const update = asyncHandler(async (req, res) => {
   let lead = await loadLead(req, { anyOwner: true, shared: true })
   const data = updateLeadSchema.parse(req.body)

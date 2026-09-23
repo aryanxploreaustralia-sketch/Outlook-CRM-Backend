@@ -531,7 +531,11 @@ export const exportLeads = asyncHandler(async (req, res) => {
 export const facets = asyncHandler(async (req, res) =>
   sendSuccess(res, {
     message: 'Filter options retrieved.',
-    data: await leadService.leadFacets({ owner: ownerOf(req) }),
+    /*
+     * `viewer`, exactly as `list` passes it: the options must describe the
+     * enquiries this person can open, which includes the ones shared with them.
+     */
+    data: await leadService.leadFacets({ owner: ownerOf(req), viewer: ownerOf(req) }),
   }),
 )
 

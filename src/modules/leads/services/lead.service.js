@@ -350,22 +350,52 @@ export async function listLeads({ owner, page = 1, limit = 50, sort = '-quote', 
  * Computed from the leads that exist rather than a fixed list, so the city
  * filter offers "Hydrabad" if that is genuinely what the sheet says.
  */
-export async function leadFacets({ owner }) {
-  const [cities, handlers, markets, months, companies] = await Promise.all([
-    Lead.distinct('city', { owner, isDeleted: false, city: { $nin: [null, ''] } }),
-    Lead.distinct('handledBy', { owner, isDeleted: false, handledBy: { $nin: [null, ''] } }),
-    Lead.distinct('market', { owner, isDeleted: false }),
+export async function leadFacets({ owner, viewer = null }) {
+  /*
+   * The filter options describe the enquiries this person can actually open.
+   *
+   * ## What this fixes
+   *
+   * Every facet below used to be scoped to `{ owner }` while the register
+   * itself is scoped to `(owner OR sharedWith: viewer)`. So an enquiry shared
+   * with somebody appeared in their list and contributed nothing to their
+   * filters: a lead handled by Mukesh Patel was visible, and "Mukesh Patel"
+   * was missing from Handled by — the filter could not select a row that was
+   * sitting on the screen.
+   *
+   * Reusing `buildLeadFilter` is what guarantees the two agree. It is the same
+   * function the list builds its query with, so the access rule is written
+   * once: change who may see an enquiry and both follow. Passing no `viewer`
+   * still yields `{ owner }`, so any caller that wants one register only is
+   * unaffected.
+   *
+   * ## And why the values come from leads rather than from elsewhere
+   *
+   * `companies` was read from the `Company` collection, which is owner-scoped —
+   * so a shared enquiry's company could not appear either. `stages` was the
+   * whole vocabulary regardless of what the register holds. Both are now
+   * derived from the accessible enquiries themselves, which is the only source
+   * that can neither omit a visible value nor disclose an invisible one.
+   */
+  const scope = buildLeadFilter({ owner, viewer })
+
+  const [cities, handlers, markets, months, companies, stages] = await Promise.all([
+    Lead.distinct('city', { ...scope, city: { $nin: [null, ''] } }),
+    Lead.distinct('handledBy', { ...scope, handledBy: { $nin: [null, ''] } }),
+    Lead.distinct('market', scope),
     Lead.aggregate([
-      { $match: { owner, isDeleted: false, travelDate: { $ne: null } } },
+      { $match: { ...scope, travelDate: { $ne: null } } },
       { $group: { _id: { $dateToString: { format: '%Y-%m', date: '$travelDate' } }, count: { $sum: 1 } } },
       { $sort: { _id: 1 } },
       { $limit: 60 },
     ]),
-    Company.find({ owner, isDeleted: false })
-      .select('_id companyName leadCount')
-      .sort({ leadCount: -1 })
-      .limit(200)
-      .lean(),
+    Lead.aggregate([
+      { $match: { ...scope, company: { $ne: null } } },
+      { $group: { _id: '$company', name: { $first: '$companyName' }, leadCount: { $sum: 1 } } },
+      { $sort: { leadCount: -1 } },
+      { $limit: 200 },
+    ]),
+    Lead.distinct('stage', scope),
   ])
 
   return {
@@ -374,11 +404,20 @@ export async function leadFacets({ owner }) {
     markets,
     travelMonths: months.map((row) => ({ month: row._id, count: row.count })),
     companies: companies.map((company) => ({
-      id: company._id.toString(),
-      name: company.companyName,
+      id: String(company._id),
+      name: company.name,
       leadCount: company.leadCount,
     })),
-    stages: LEAD_STAGE_ORDER.map((stage) => ({ value: stage, label: LEAD_STAGE_LABELS[stage] })),
+
+    /*
+     * Only the stages the accessible enquiries are actually in, in the
+     * register's own order. A filter offering a stage that can only return
+     * nothing is a filter that wastes a click.
+     */
+    stages: LEAD_STAGE_ORDER.filter((stage) => stages.includes(stage)).map((stage) => ({
+      value: stage,
+      label: LEAD_STAGE_LABELS[stage],
+    })),
   }
 }
 

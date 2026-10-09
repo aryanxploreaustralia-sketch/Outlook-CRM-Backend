@@ -28,10 +28,109 @@ const SORT_OPTIONS = {
   quote: { quoteDate: 1 },
   '-travel': { travelDate: -1 },
   travel: { travelDate: 1 },
+  /*
+   * Both reference keys are served by the aggregation below, not by these.
+   *
+   * They are kept so the map still answers for every key the API exposes — and
+   * as the fallback if the pipeline is ever bypassed — but a plain
+   * `{ reference: 1 }` sorts the string, which means the *prefix* decides the
+   * order: XANB079, XANB080, XARS079 rather than 079, 079, 080. See
+   * `REFERENCE_SORT_STAGES`.
+   */
   reference: { reference: 1 },
   '-reference': { reference: -1 },
   person: { contactPerson: 1 },
   company: { companyName: 1 },
+}
+
+/** The two sort keys that need the numeric suffix rather than the string. */
+const REFERENCE_SORTS = new Set(['reference', '-reference'])
+
+/**
+ * Sorting the register by what the office actually reads: the number.
+ *
+ * ## The problem with sorting the field
+ *
+ * A reference is a prefix and a number — `XANB079`, `XARS079`, `XNMP080` — and
+ * the prefix encodes who entered it, not when or in what order. Sorted as a
+ * string, the prefix wins every comparison, so the three above come out
+ * grouped by consultant with the numbers scattered inside each group. Worse,
+ * a string sort is not even numeric within one prefix: `XAMP999` sorts above
+ * `XAMP1000`, because `9` > `1`.
+ *
+ * ## What this does instead
+ *
+ * `$regexFind` splits each reference into its letters and its digits, the
+ * digits are converted to a number, and the sort is:
+ *
+ *   1. references that have a number, before those that do not
+ *   2. the number, in the direction asked for
+ *   3. the prefix, alphabetically — **always ascending**
+ *   4. `_id`, so the order is total and a page boundary cannot wobble
+ *
+ * Step 3 is ascending in both directions deliberately: with three references
+ * numbered 079, the reader wants them in a stable, nameable order, not
+ * reversed as a side effect of the direction they chose for the numbers.
+ *
+ * Step 1 is how a malformed reference is handled — a blank, a letters-only
+ * value, an imported row with a stray space. `$convert` yields null rather
+ * than throwing, the flag sends those rows to the end in both directions, and
+ * they stay ordered among themselves by prefix and id. Nothing crashes and
+ * nothing disappears.
+ *
+ * The prefix is matched as `[A-Z]*`, not a fixed width: the register holds
+ * XAMP, XNMP, XANB and XARS today and the generator derives new ones from
+ * whatever the office is already using.
+ *
+ * @param {1|-1} direction Applied to the number only.
+ */
+const REFERENCE_SORT_STAGES = (direction) => [
+  {
+    $addFields: {
+      __ref: {
+        $regexFind: {
+          input: { $toUpper: { $ifNull: ['$reference', ''] } },
+          regex: '^([A-Z]*)([0-9]+)$',
+        },
+      },
+    },
+  },
+  {
+    $addFields: {
+      __refPrefix: { $ifNull: [{ $arrayElemAt: ['$__ref.captures', 0] }, ''] },
+      __refNumber: {
+        $convert: {
+          input: { $arrayElemAt: ['$__ref.captures', 1] },
+          to: 'long',
+          onError: null,
+          onNull: null,
+        },
+      },
+    },
+  },
+  { $addFields: { __refHasNumber: { $cond: [{ $eq: ['$__refNumber', null] }, 0, 1] } } },
+  { $sort: { __refHasNumber: -1, __refNumber: direction, __refPrefix: 1, _id: 1 } },
+  { $project: { __ref: 0, __refPrefix: 0, __refNumber: 0, __refHasNumber: 0 } },
+]
+
+/**
+ * One page of the register, ordered by reference number.
+ *
+ * The filter is matched *first*, so access and every other filter apply before
+ * anything is sorted or skipped — the ordering is global across everything the
+ * caller may see, and page two continues page one rather than re-sorting a
+ * slice. Documents are hydrated on the way out because callers render them
+ * through `toSummaryJSON()`, which a plain aggregation result does not have.
+ */
+async function referenceSortedPage(filter, sort, skip, limit) {
+  const docs = await Lead.aggregate([
+    { $match: filter },
+    ...REFERENCE_SORT_STAGES(sort === '-reference' ? -1 : 1),
+    { $skip: skip },
+    { $limit: limit },
+  ])
+
+  return docs.map((doc) => Lead.hydrate(doc))
 }
 
 /**
@@ -327,7 +426,15 @@ export async function listLeads({ owner, page = 1, limit = 50, sort = '-quote', 
   const sortSpec = SORT_OPTIONS[sort] ?? SORT_OPTIONS['-quote']
 
   const [items, total] = await Promise.all([
-    Lead.find(filter).sort(sortSpec).skip(skip).limit(limit),
+    /*
+     * One branch, for the two sorts a `.sort()` cannot express. Every other
+     * key still takes the indexed path it always did — unchanged, including
+     * the default — and `countDocuments` runs the same filter either way, so
+     * the total and the page count are identical whichever branch ran.
+     */
+    REFERENCE_SORTS.has(sort)
+      ? referenceSortedPage(filter, sort, skip, limit)
+      : Lead.find(filter).sort(sortSpec).skip(skip).limit(limit),
     Lead.countDocuments(filter),
   ])
 

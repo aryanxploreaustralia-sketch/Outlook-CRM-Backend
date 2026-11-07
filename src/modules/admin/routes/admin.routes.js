@@ -535,6 +535,28 @@ router.get(
 )
 
 /**
+ * The same register as a workbook.
+ *
+ * Registered before `/leads/:id` below, so Express can never read "export" as
+ * a lead id — the same ordering the CRM's own export route relies on.
+ *
+ * Two capabilities, like the list above, and a third: `leads.export`. Reading
+ * the register across every user is one permission; taking a file of it off the
+ * system is another, and the CRM's export has always required it. Owner, Admin
+ * and Manager hold all three, which is exactly who can open this page today —
+ * so no role gains or loses anything.
+ */
+router.get(
+  '/leads/export',
+  requireAllPermissions([
+    PERMISSIONS.LEADS_VIEW,
+    PERMISSIONS.ANALYTICS_VIEW,
+    PERMISSIONS.LEADS_EXPORT,
+  ]),
+  controller.getAdminLeadsExport,
+)
+
+/**
  * The same enquiries, grouped by the company that sent them.
  *
  * Identical guard to `/leads` above and for exactly the same reason: it reads

@@ -39,6 +39,13 @@ import {
   WON_STAGES,
 } from '../../leads/constants/leadConstants.js'
 import { AUTO_MAIL_STATUS, AUTO_MAIL_STATUS_VALUES } from '../../leads/constants/syncConstants.js'
+import {
+  DATE_COLUMNS,
+  EXPORT_COLUMNS,
+  MAX_EXPORT_ROWS,
+  toRow,
+} from '../../leads/services/leadExport.service.js'
+import { toXlsx } from '../../contacts/utils/xlsx.js'
 import { ACTIVE_LEAD_DAYS, STALE_LEAD_DAYS } from '../constants/adminConstants.js'
 import { resolveRange } from '../validators/adminAnalytics.validator.js'
 
@@ -220,7 +227,21 @@ const LEAD_ORDER = Object.freeze({
   travel: { travelDate: 1, _id: 1 },
 })
 
-export async function listAdminLeads(query = {}) {
+/**
+ * The register filter the lead monitor queries by.
+ *
+ * Lifted verbatim out of `listAdminLeads`, which now calls it, so the export
+ * beside it filters by *the same* definition rather than a second copy that
+ * would drift the first time a filter is added. Nothing in the body changed:
+ * the same clauses, in the same order, with the same comments.
+ *
+ * Returns the derived values the caller still needs — `staleFilter` for the
+ * summary tile, and the resolved range for the response's `meta` — so moving
+ * the block changed no output either.
+ *
+ * @param {object} query Parsed by `adminLeadQuerySchema`.
+ */
+function buildAdminLeadFilter(query = {}) {
   const {
     stage,
     market,
@@ -234,9 +255,6 @@ export async function listAdminLeads(query = {}) {
     preset,
     from,
     to,
-    sort = 'recent',
-    page = 1,
-    limit = 50,
   } = query
 
   const staleCutoffDate = new Date(Date.now() - STALE_LEAD_DAYS * 86_400_000)
@@ -346,6 +364,19 @@ export async function listAdminLeads(query = {}) {
    * window than the table below it is worse than no tile.
    */
   const staleFilter = { ...filter, $and: [...and, { updatedAt: { $lt: staleCutoffDate } }] }
+  return { filter, staleFilter, dateField, resolvedPreset, rangeFrom, rangeTo }
+}
+
+export async function listAdminLeads(query = {}) {
+  /*
+   * Only the three keys this function still decides for itself. Everything the
+   * filter is built from is destructured by `buildAdminLeadFilter` above, which
+   * is where those clauses now live.
+   */
+  const { sort = 'recent', page = 1, limit = 50 } = query
+
+  const { filter, staleFilter, dateField, resolvedPreset, rangeFrom, rangeTo } =
+    buildAdminLeadFilter(query)
 
   /**
    * One page, plus counts taken across the whole filtered set.
@@ -636,6 +667,80 @@ export async function listAdminCompanies(query = {}) {
       markets: MARKET_VALUES.map((value) => ({ value, label: MARKET_LABELS[value] ?? value })),
       dateField,
     },
+  }
+}
+
+/**
+ * The register as a workbook, across every owner.
+ *
+ * The admin counterpart of `exportLeadsWorkbook`, and deliberately built from
+ * the same two pieces:
+ *
+ *   - `buildAdminLeadFilter`, so the file holds exactly what the monitor is
+ *     showing — every filter, the search, a chosen owner — rather than a second
+ *     interpretation of those filters;
+ *   - `toRow` and `EXPORT_COLUMNS` from the CRM's own export, so the columns,
+ *     their order and their formatting are the file users already know.
+ *
+ * ## What it adds, and why only this
+ *
+ * One column: `Owner`. The CRM's export never needed it — every row belonged to
+ * the person downloading it — and a cross-owner file is unreadable without it.
+ * It is appended last so the familiar columns keep their positions, and so a
+ * re-import still maps: the importer matches headers it knows and ignores ones
+ * it does not.
+ *
+ * ## Read-only
+ *
+ * One `find`, one name lookup. Nothing is inserted, updated or deleted, and no
+ * document is touched by producing a file from it.
+ *
+ * ## The whole matching set, not a page
+ *
+ * No `skip`/`limit` from the query reaches this: the monitor's pagination is a
+ * reading convenience, and an export that honoured it would hand over page one
+ * of the answer. The row ceiling is the CRM export's own `MAX_EXPORT_ROWS`, and
+ * truncation is reported rather than hidden.
+ *
+ * @param {object} query Parsed by `adminLeadQuerySchema`.
+ */
+export async function exportAdminLeadsWorkbook(query = {}) {
+  const { filter } = buildAdminLeadFilter(query)
+
+  const leads = await Lead.find(filter)
+    // The same order the CRM's export writes, so two files of the same
+    // enquiries read the same way.
+    .sort({ quoteDate: -1, createdAt: -1 })
+    // One more than the ceiling, so truncation can be reported honestly.
+    .limit(MAX_EXPORT_ROWS + 1)
+    .lean()
+
+  const truncated = leads.length > MAX_EXPORT_ROWS
+  const included = truncated ? leads.slice(0, MAX_EXPORT_ROWS) : leads
+
+  // One lookup for every owner in the file, not one per row.
+  const owners = await nameMap(included.map((lead) => lead.owner))
+
+  const rows = included.map((lead) => ({
+    ...toRow(lead),
+    Owner: lead.owner ? (owners.get(String(lead.owner)) ?? 'Unknown user') : 'Unassigned',
+  }))
+
+  const buffer = toXlsx([...EXPORT_COLUMNS, 'Owner'], rows, 'Leads', {
+    headerStyle: true,
+    autoWidth: true,
+    freezeHeader: true,
+    dateColumns: [...DATE_COLUMNS],
+  })
+
+  const stamp = new Date().toISOString().slice(0, 10)
+
+  return {
+    buffer,
+    filename: `leads-all-owners-${stamp}.xlsx`,
+    contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    count: rows.length,
+    truncated,
   }
 }
 

@@ -65,8 +65,14 @@ export const EXPORT_COLUMNS = Object.freeze([
   'Updated Date',
 ])
 
-/** Columns written as real Excel dates rather than text. */
-const DATE_COLUMNS = Object.freeze([
+/**
+ * Columns written as real Excel dates rather than text.
+ *
+ * Exported so the admin register's export writes the same cells as this one
+ * rather than keeping a second list that could drift. Nothing about this
+ * module's own behaviour changes.
+ */
+export const DATE_COLUMNS = Object.freeze([
   'Query Date',
   'Travel Date',
   'Mail Sent At',
@@ -100,7 +106,14 @@ function asDate(value) {
  * computed, inferred or invented — an export that disagrees with the screen is
  * worse than no export.
  */
-function toRow(lead) {
+/**
+ * One lead as one spreadsheet row.
+ *
+ * Exported for the admin register's export, which appends an Owner column to
+ * this exact shape. Keeping one row builder is what guarantees the two files
+ * carry the same fields, in the same order, formatted the same way.
+ */
+export function toRow(lead) {
   const travelDate = asDate(lead.travelDate)
 
   return {
@@ -210,4 +223,4 @@ export async function exportLeadsWorkbook({ owner, criteria = {} }) {
   }
 }
 
-export default { exportLeadsWorkbook, EXPORT_COLUMNS, MAX_EXPORT_ROWS }
+export default { exportLeadsWorkbook, EXPORT_COLUMNS, DATE_COLUMNS, MAX_EXPORT_ROWS, toRow }

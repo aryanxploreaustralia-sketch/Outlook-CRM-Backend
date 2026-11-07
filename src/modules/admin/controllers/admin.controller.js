@@ -59,6 +59,7 @@ import {
 import {
   getAdminLeadDetail as loadAdminLeadDetail,
   listAdminCampaigns,
+  exportAdminLeadsWorkbook,
   listAdminCompanies,
   listAdminLeads,
 } from '../services/adminMonitoring.service.js'
@@ -1073,6 +1074,34 @@ export const getAdminCalendarDay = asyncHandler(async (req, res) => {
  * The company-wise enquiry overview. Read-only, and scoped by the same guard as
  * the lead monitor beside it: this counts across every user's register.
  */
+/**
+ * GET /api/v1/admin/leads/export
+ *
+ * The monitor's current view as a workbook, across every owner.
+ *
+ * Takes the same query the monitor itself sends — `adminLeadQuerySchema`, so
+ * one validator governs both — and deliberately ignores its `page` and `limit`:
+ * an export is of the whole matching set, not of the page being read. The
+ * response mirrors the CRM export's exactly, including the two count headers
+ * and the CORS exposure they need in a split deployment.
+ *
+ * Read-only.
+ */
+export const getAdminLeadsExport = asyncHandler(async (req, res) => {
+  const query = adminLeadQuerySchema.parse(req.query)
+
+  const { buffer, filename, contentType, count, truncated } = await exportAdminLeadsWorkbook(query)
+
+  res.setHeader('Content-Type', contentType)
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+  res.setHeader('Content-Length', buffer.length)
+  res.setHeader('X-Export-Count', String(count))
+  if (truncated) res.setHeader('X-Export-Truncated', 'true')
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition, X-Export-Count, X-Export-Truncated')
+
+  return res.status(HTTP_STATUS.OK).send(buffer)
+})
+
 export const getAdminCompanies = asyncHandler(async (req, res) => {
   const query = adminCompanyQuerySchema.parse(req.query)
 

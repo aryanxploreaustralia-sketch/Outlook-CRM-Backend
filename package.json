@@ -44,6 +44,7 @@
     "test:lead-assignment": "node scripts/test-lead-assignment.mjs",
     "test:lead-notifications": "node scripts/test-lead-notifications.mjs",
     "test:admin-companies": "node scripts/test-admin-companies.mjs",
+    "test:admin-lead-export": "node scripts/test-admin-lead-export.mjs",
     "test:lead-notes": "node scripts/test-lead-notes.mjs",
     "test:lead-facets": "node scripts/test-lead-facets.mjs",
     "test:lead-reference-sort": "node scripts/test-lead-reference-sort.mjs",

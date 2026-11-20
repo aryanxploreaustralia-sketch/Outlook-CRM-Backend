@@ -41,6 +41,7 @@
     "test:lead-full-edit": "node scripts/test-lead-full-edit.mjs",
     "test:lead-delete": "node scripts/test-lead-delete.mjs",
     "test:lead-sharing": "node scripts/test-lead-sharing.mjs",
+    "test:lead-share-persistence": "node scripts/test-lead-share-persistence.mjs",
     "test:lead-assignment": "node scripts/test-lead-assignment.mjs",
     "test:lead-notifications": "node scripts/test-lead-notifications.mjs",
     "test:admin-companies": "node scripts/test-admin-companies.mjs",

@@ -23,6 +23,21 @@ const { SyncTombstone } = await import(`${B}/models/syncTombstone.model.js`)
 const { ROLES } = await import(`${B}/constants/roles.js`)
 const { USER_STATUS } = await import(`${B}/constants/userStatus.js`)
 
+/*
+ * The standing-grant collection, in memory and empty.
+ *
+ * Sharing has two mechanisms now: the per-enquiry `sharedWith` stamp this suite
+ * was written around, and a standing grant on an owner's whole register. The
+ * read paths consult the grant collection, and an unmocked query against it
+ * would buffer and then kill the harness rather than fail an assertion.
+ *
+ * Installed with no grants, so every assertion below still describes stamping
+ * on its own — exactly the behaviour it was written to pin down.
+ */
+const { installLeadShareMock } = await import(new URL('./lib/leadShareMock.mjs', import.meta.url).href)
+const leadShares = installLeadShareMock()
+
+
 let pass = 0
 let fail = 0
 const check = (name, ok, detail = '') => {
@@ -98,6 +113,16 @@ function reset({ sharedWith = [] } = {}) {
   updateManyCalls = []
   companyWrites = []
   contactWrites = []
+
+  /*
+   * The grants too, or a section inherits the previous one's sharing.
+   *
+   * Bulk sharing now writes a standing grant as well as the stamps, and those
+   * rows outlive a `reset()` that only rebuilds the leads — which is how the
+   * suite first reported a register as already shared before its own first
+   * save. The fixture has to clear both halves to describe one scenario.
+   */
+  leadShares.reset()
 }
 
 /** Matches a row against a filter, including the `$or` the new scopes use. */

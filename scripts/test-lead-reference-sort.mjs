@@ -13,6 +13,21 @@
 const B = new URL('../src', import.meta.url).href
 const { Lead } = await import(`${B}/models/lead.model.js`)
 
+/*
+ * The standing-grant collection, in memory and empty.
+ *
+ * Sharing has two mechanisms now: the per-enquiry `sharedWith` stamp this suite
+ * was written around, and a standing grant on an owner's whole register. The
+ * read paths consult the grant collection, and an unmocked query against it
+ * would buffer and then kill the harness rather than fail an assertion.
+ *
+ * Installed with no grants, so every assertion below still describes stamping
+ * on its own — exactly the behaviour it was written to pin down.
+ */
+const { installLeadShareMock } = await import(new URL('./lib/leadShareMock.mjs', import.meta.url).href)
+installLeadShareMock()
+
+
 let pass = 0
 let fail = 0
 const check = (name, ok, detail = '') => {

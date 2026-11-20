@@ -19,6 +19,7 @@ import {
   TERMINAL_STAGES,
   WON_STAGES,
 } from '../constants/leadConstants.js'
+import { ownersSharingWith } from './leadShare.service.js'
 
 /** Sort keys the API exposes, mapped to index-friendly sorts. */
 const SORT_OPTIONS = {
@@ -157,6 +158,21 @@ export function buildLeadFilter({
    * by decision rather than by omission. See their call sites.
    */
   viewer = null,
+  /**
+   * Owners who have granted this reader a standing share of their register.
+   *
+   * The fix for one-time sharing. `sharedWith` is a stamp written onto the
+   * leads that existed when Save was pressed, so it can never cover a lead
+   * created afterwards. This list is the relationship instead: "every enquiry
+   * these people own, including the ones they have not entered yet".
+   *
+   * Passed in rather than looked up here so this function stays pure and
+   * synchronous — it is called by the list, the facets and the export, and a
+   * database round trip hidden inside a filter builder would be a trap. Empty
+   * by default, so a caller that does not fetch grants gets precisely the
+   * filter it got before.
+   */
+  sharedOwners = [],
   stage = null,
   stages = null,
   city = null,
@@ -209,7 +225,24 @@ export function buildLeadFilter({
   const filter = {}
 
   if (viewer) {
-    filter.$and = [{ $or: [{ owner }, { sharedWith: viewer }] }]
+    /*
+     * Three alternatives, in cost order: mine, stamped to me, owned by someone
+     * sharing with me.
+     *
+     * The third is what makes sharing persistent. The first two are exactly the
+     * clause that was here before and are untouched, so every lead visible
+     * yesterday — including every one carrying an existing `sharedWith` stamp —
+     * is still visible by the same branch it always matched. The grant branch
+     * only ever adds rows.
+     *
+     * It is appended only when there is a grant to honour, so a reader with no
+     * grants (the common case) gets the identical two-branch `$or` and the
+     * identical query plan.
+     */
+    const access = [{ owner }, { sharedWith: viewer }]
+    if (sharedOwners.length > 0) access.push({ owner: { $in: sharedOwners } })
+
+    filter.$and = [{ $or: access }]
   } else {
     filter.owner = owner
   }
@@ -400,6 +433,14 @@ export { resolveCompanyScope as resolveCompanyScopeForExport }
  */
 export async function listLeads({ owner, page = 1, limit = 50, sort = '-quote', viewer = null, ...criteria }) {
   /*
+   * The registers shared with this reader by standing grant.
+   *
+   * One indexed lookup, and only when a `viewer` was supplied — the export and
+   * the campaign audience pass none, so neither gains a query or a row.
+   */
+  const sharedOwners = await ownersSharingWith(viewer)
+
+  /*
    * `owner` LAST, deliberately.
    *
    * It is the authenticated caller's id, and everything spread before it is
@@ -414,7 +455,7 @@ export async function listLeads({ owner, page = 1, limit = 50, sort = '-quote', 
    * whether shared enquiries are included, so a caller-supplied `viewer` in the
    * query string must never reach this. Null unless the controller sets it.
    */
-  const filter = buildLeadFilter({ ...criteria, owner, viewer })
+  const filter = buildLeadFilter({ ...criteria, owner, viewer, sharedOwners })
 
   if (filter._companyScope) {
     const ids = await resolveCompanyScope(owner, filter._companyScope)
@@ -484,7 +525,7 @@ export async function leadFacets({ owner, viewer = null }) {
    * derived from the accessible enquiries themselves, which is the only source
    * that can neither omit a visible value nor disclose an invisible one.
    */
-  const scope = buildLeadFilter({ owner, viewer })
+  const scope = buildLeadFilter({ owner, viewer, sharedOwners: await ownersSharingWith(viewer) })
 
   const [cities, handlers, markets, months, companies, stages] = await Promise.all([
     Lead.distinct('city', { ...scope, city: { $nin: [null, ''] } }),

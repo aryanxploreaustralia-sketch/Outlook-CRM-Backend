@@ -41,6 +41,7 @@ import { classifyWorkbook } from '../services/worksheetClassifier.service.js'
 import { analyseSheet, importSheet, rollbackImport } from '../services/leadImport.service.js'
 import * as leadService from '../services/lead.service.js'
 import { exportLeadsWorkbook } from '../services/leadExport.service.js'
+import { ownersSharingWith, setGrantsForOwner, viewersOf } from '../services/leadShare.service.js'
 import {
   checkReference,
   createLeadManually,
@@ -218,7 +219,25 @@ async function loadLead(req, { anyOwner = false, shared = false } = {}) {
   if (anyOwner && canReachAnyLead(req)) {
     scope = { _id: id, isDeleted: false }
   } else if (shared) {
-    scope = { _id: id, isDeleted: false, $or: [{ owner: me }, { sharedWith: me }] }
+    /*
+     * The standing grants are fetched here, once, and cached on the request.
+     *
+     * They are what makes sharing persistent: a stamp in `sharedWith` can only
+     * ever cover the enquiries that existed when Save was pressed, so an
+     * enquiry created afterwards is reachable by its owner's grant or not at
+     * all. The grant branch is appended only when a grant exists, so a reader
+     * with none runs the identical two-branch query.
+     *
+     * Caching matters beyond saving a round trip: `canEditLead` is synchronous
+     * and is answered from this, so the scope that admitted the enquiry and the
+     * permission reported for it are decided from one reading.
+     */
+    const grantors = await grantorsFor(req)
+
+    const access = [{ owner: me }, { sharedWith: me }]
+    if (grantors.length > 0) access.push({ owner: { $in: grantors } })
+
+    scope = { _id: id, isDeleted: false, $or: access }
   } else {
     scope = { _id: id, owner: me, isDeleted: false }
   }
@@ -228,10 +247,48 @@ async function loadLead(req, { anyOwner = false, shared = false } = {}) {
   return lead
 }
 
-/** Whether this caller holds an explicit share on this enquiry. */
+/**
+ * The owners whose registers this caller holds a standing grant on.
+ *
+ * Memoized per request. One request handles one enquiry, but it asks about
+ * access more than once — the scope that loads it, then the `canEdit` flag in
+ * the response — and both must answer from the same reading, or a response
+ * could report `canEdit: false` for an enquiry the very next request lets the
+ * same person edit.
+ */
+async function grantorsFor(req) {
+  if (!req._leadShareGrantors) {
+    req._leadShareGrantors = await ownersSharingWith(ownerOf(req))
+  }
+  return req._leadShareGrantors
+}
+
+/**
+ * Whether this caller holds a share on this enquiry — by either mechanism.
+ *
+ * Two ways in, and they mean the same thing to the caller:
+ *
+ * - a per-enquiry stamp in `sharedWith`, which is how a single enquiry is
+ *   shared, and how every share made before standing grants existed is
+ *   recorded. Checked first and unchanged, so no existing grant loses access.
+ * - a standing grant on the owner's whole register, which is the only mechanism
+ *   that can cover an enquiry created after the share was agreed.
+ *
+ * Without the second, access would depend on *when* an enquiry was entered: one
+ * created before Save would be editable and one created after would not, for
+ * the same two people and the same arrangement. That split is the defect this
+ * closes, so the grant has to confer the same access the stamp does.
+ *
+ * Synchronous, and reads only the grant list `loadLead` already fetched. On a
+ * path that never asked for shared access the list is absent and only the stamp
+ * is consulted — exactly what happened before.
+ */
 function isSharedWith(req, lead) {
   const me = String(ownerOf(req))
-  return (lead.sharedWith ?? []).some((id) => String(id) === me)
+
+  if ((lead.sharedWith ?? []).some((id) => String(id) === me)) return true
+
+  return (req._leadShareGrantors ?? []).some((id) => String(id) === String(lead.owner))
 }
 
 /**
@@ -1430,12 +1487,28 @@ export const bulkSharingPreview = asyncHandler(async (req, res) => {
    * Neither is computed for somebody who may not manage sharing — the flag is
    * the answer, and a refused caller has no use for either.
    */
-  const [leadCount, sharedUserIds] = allowed
+  const [leadCount, stamped, granted] = allowed
     ? await Promise.all([
         Lead.countDocuments(filter),
         Lead.distinct('sharedWith', filter),
+        viewersOf(owner),
       ])
-    : [0, []]
+    : [0, [], []]
+
+  /*
+   * The union of the two mechanisms, because the dialog shows one checkbox.
+   *
+   * A standing grant can exist with no stamp behind it — most obviously when
+   * the register was empty at the moment it was given — and reading only the
+   * stamps would then show that colleague unticked while they do in fact have
+   * access. Saving from that screen would revoke them without anybody intending
+   * it. The reverse case is just as real: a pre-existing stamp with no grant,
+   * which is every share made before standing grants existed, and it must keep
+   * showing as shared.
+   */
+  const sharedUserIds = [
+    ...new Set([...(stamped ?? []), ...(granted ?? [])].map(String)),
+  ]
 
   return sendSuccess(res, {
     message: 'Bulk sharing preview.',
@@ -1443,7 +1516,7 @@ export const bulkSharingPreview = asyncHandler(async (req, res) => {
       canBulkShare: allowed,
       leadCount,
       /** Ids only. The dialog resolves them against the user list it has. */
-      sharedUserIds: (sharedUserIds ?? []).map(String),
+      sharedUserIds,
     },
   })
 })
@@ -1522,17 +1595,43 @@ export const bulkShare = asyncHandler(async (req, res) => {
    */
   const filter = { owner, isDeleted: false }
 
-  const [matchedCount, currentRaw] = await Promise.all([
+  const [matchedCount, stampedRaw, grantedRaw] = await Promise.all([
     Lead.countDocuments(filter),
     Lead.distinct('sharedWith', filter),
+    viewersOf(owner),
   ])
 
-  const current = (currentRaw ?? []).map(String)
+  /*
+   * Two readings of "who has access now", used for two different decisions.
+   *
+   * `current` is the stamps alone, and it drives the stamping diff below —
+   * deliberately unchanged, because the stamps are a per-enquiry fact and the
+   * diff against them is what decides which enquiries get written. Measuring it
+   * against the grants instead would skip the stamping for a colleague who
+   * already holds a standing grant, quietly leaving the enquiries entered since
+   * the last save unstamped.
+   *
+   * `holders` is the union, and it drives the notifications and the "nothing
+   * changed" message, which are about access rather than about rows. A
+   * colleague holding a grant but no stamp — the register was empty when it was
+   * given, say — must not be announced as newly added on every save.
+   */
+  const current = (stampedRaw ?? []).map(String)
+  const holders = [...new Set([...current, ...(grantedRaw ?? []).map(String)])]
 
   const toAdd = selected.filter((id) => !current.includes(id))
   const toRemove = current.filter((id) => !selected.includes(id))
 
-  await assertShareableUsers(toAdd)
+  /** Who actually gains and loses access, counting both mechanisms. */
+  const gained = selected.filter((id) => !holders.includes(id))
+  const lost = holders.filter((id) => !selected.includes(id))
+
+  /*
+   * Every id being stamped or newly granted must be a real, undeleted account.
+   * The union of the two, so neither mechanism can be used to name an account
+   * the other would have refused.
+   */
+  await assertShareableUsers([...new Set([...toAdd, ...gained])])
 
   let removedFrom = 0
   let addedTo = 0
@@ -1557,12 +1656,41 @@ export const bulkShare = asyncHandler(async (req, res) => {
     addedTo = result.modifiedCount ?? 0
   }
 
-  // One bell per affected person for the whole register, not one per enquiry.
-  if (matchedCount > 0 && (toAdd.length > 0 || toRemove.length > 0)) {
+  /*
+   * And the part that makes the arrangement outlive this moment.
+   *
+   * Everything above stamps the enquiries that exist right now, which is what
+   * the register did before and is left exactly as it was: no existing
+   * `sharedWith` value is cleared by this addition, and a reader whose access
+   * came from a stamp keeps it. What it cannot do is cover an enquiry that does
+   * not exist yet — a lead is created with an empty `sharedWith`, so the owner
+   * had to unshare and re-share to let a colleague see yesterday's entries.
+   *
+   * The grant rows record the relationship instead, so the access filter admits
+   * tomorrow's enquiries by their owner. `selected` is the dialog's complete
+   * intended set, so this both grants and revokes in one step, and an unticked
+   * colleague loses the standing grant here while losing the stamps above.
+   *
+   * Written last on purpose. If the process died mid-save the register would be
+   * left having stamped but not yet granted — the state the system was already
+   * in before this feature, and the narrower of the two halves to be stranded
+   * on.
+   */
+  const grants = await setGrantsForOwner({ owner, viewers: selected, actor: ownerOf(req) })
+
+  /*
+   * One bell per affected person for the whole register, not one per enquiry —
+   * and only for somebody whose access genuinely changed.
+   *
+   * Not gated on `matchedCount` any more. A grant given over an empty register
+   * is a real change the colleague should hear about: it is precisely the case
+   * stamping could never express, since there was nothing to stamp.
+   */
+  if (gained.length > 0 || lost.length > 0) {
     void notifyBulkSharingChanged({
       owner,
-      added: toAdd,
-      removed: toRemove,
+      added: gained,
+      removed: lost,
       leadCount: matchedCount,
       actor: req.auth.user,
     })
@@ -1592,16 +1720,29 @@ export const bulkShare = asyncHandler(async (req, res) => {
       matched: matchedCount,
       addedTo,
       removedFrom,
+      /** Standing grants written and withdrawn by this save. */
+      grantsAdded: grants.granted,
+      grantsRevoked: grants.revoked,
       // Recorded to make it evident in the log that ownership did not move.
       owner: String(owner),
     },
   })
 
-  const changed = toAdd.length > 0 || toRemove.length > 0
+  /*
+   * Changed, counting either mechanism.
+   *
+   * A grant written where there was no stamp to write — the owner's first share
+   * over an empty register — is a change, and reporting "nothing changed" for
+   * it would be a lie told at the one moment the owner most needs to know the
+   * share took.
+   */
+  const changed =
+    toAdd.length > 0 || toRemove.length > 0 || grants.granted > 0 || grants.revoked > 0
 
   const parts = []
-  if (toAdd.length > 0) parts.push(`shared with ${toAdd.length} user(s)`)
-  if (toRemove.length > 0) parts.push(`removed for ${toRemove.length} user(s)`)
+  if (gained.length > 0) parts.push(`shared with ${gained.length} user(s)`)
+  if (lost.length > 0) parts.push(`removed for ${lost.length} user(s)`)
+  if (parts.length === 0 && changed) parts.push('updated')
 
   return sendSuccess(res, {
     message:
@@ -1619,6 +1760,13 @@ export const bulkShare = asyncHandler(async (req, res) => {
       userIds: selected,
       added: toAdd,
       removed: toRemove,
+      /**
+       * That the share now covers enquiries entered later, not just today's.
+       *
+       * Reported so the dialog can say so rather than leaving the owner to
+       * wonder whether they will have to come back and re-share.
+       */
+      persistent: selected.length > 0,
     },
   })
 })
